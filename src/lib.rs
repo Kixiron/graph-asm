@@ -1,10 +1,14 @@
-use egg::{rewrite, Analysis, Id, Subst, Symbol};
+mod cost;
+mod operator;
+
+use std::collections::HashMap;
+
+pub use cost::OperatorCost;
+pub use operator::{Func, Index, Input, Operator, Output};
+
+use egg::{rewrite, Analysis, Id, Language, Subst};
 #[cfg(test)]
-use egg::{AstDepth, AstSize, Extractor, StopReason};
-use std::{
-    fmt::{self, Display, Formatter, Write},
-    str::FromStr,
-};
+use egg::{Extractor, StopReason};
 use velcro::vec;
 
 type EGraph = egg::EGraph<Operator, OperatorAnalyzer>;
@@ -15,139 +19,45 @@ type Runner = egg::Runner<Operator, OperatorAnalyzer>;
 #[cfg(test)]
 type RecExpr = egg::RecExpr<Operator>;
 
-egg::define_language! {
-    pub enum Operator {
-        // An input operator
-        Input(Input),
-        // An output operator
-        Output(Output),
-
-        // An opaque function
-        OpaqueFunc(Func),
-
-        // An empty collection with no values
-        "empty" = Empty,
-
-        "map" = Map([Id; 2]),
-        "filter" = Filter([Id; 2]),
-        "filter_map" = FilterMap([Id; 2]),
-
-        // `(join ?arr1 ?arr2)`
-        "join" = Join([Id; 2]),
-
-        // `(join_map ?arr1 ?arr2 ?map)` where `?map`
-        // is a post-join map function
-        "join_map" = JoinMap([Id; 3]),
-
-        // `(join_filter ?arr1 ?arr2 ?filter)` where `?filter`
-        // is a post-join filter function
-        "join_filter" = JoinFilter([Id; 3]),
-
-        // `(reduce ?arr ?reduce)` where `?reduce` is the
-        // reduction function
-        "reduce" = Reduce([Id; 2]),
-
-        "arrange_by_key" = ArrangeByKey(Id),
-        "arrange_by_self" = ArrangeBySelf(Id),
-
-        "concat" = Concat(Vec<Id>),
-
-        // `(apply ?func1 ?value)`
-        "apply" = Apply([Id; 2]),
-
-        // An `.and_then()` combinator applied to `Option`s
-        "and_then" = AndThen([Id; 2]),
-
-        // `(filter_opt ?option ?predicate)`
-        // A version of `Option::filter()` that returns `None`
-        // when the predicate is false and the given value
-        // when true
-        "filter_opt" = FilterOption([Id; 2]),
-
-        // `(rev_tuple ?tuple)`
-        // Reverses the order of values in a tuple,
-        // turning `(?x, ?y)` into `(?y, ?x)`
-        "rev_tuple" = ReverseTuple(Id),
-
-        // `(if ?cond ?then ?else)`
-        "if" = If([Id; 3]),
-
-        // `(and ?cond1 ?cond2)`
-        "and" = And([Id; 2]),
-        // `(or ?cond1 ?cond2)`
-        "or" = Or([Id; 2]),
-
-        // `(fun ?body)`
-        "fun" = Func(Id),
-
-        // TODO: Remove `let` and `var` in favor of a CPS form
-        // `(let ?var ?value ?in)`
-        "let" = Let([Id; 3]),
-        // `(var ?name)`
-        "var" = Var(Id),
-
-        "some" = Some(Id),
-        "none" = None,
-
-        // `(list ?elems...)`
-        "list" = List(Vec<Id>),
-        // `(tuple ?elems...)`
-        "tuple" = Tuple(Box<[Id]>),
-
-        // `(case ?var ?pattern ?in)`
-        "case" = Case([Id; 3]),
-
-        "unit" = Unit,
-
-        "+" = Add([Id; 2]),
-        "-" = Sub([Id; 2]),
-        "==" = Eq([Id; 2]),
-        ">=" = GreaterEq([Id; 2]),
-
-        // A [De Bruijn index](https://en.wikipedia.org/wiki/De_Bruijn_index)
-        Index(Index),
-
-        Int(i64),
-        UInt(u64),
-        Bool(bool),
-        Symbol(Symbol),
-    }
-}
-
-impl Operator {
-    pub const fn as_symbol(&self) -> Option<Symbol> {
-        if let Self::Symbol(symbol) = *self {
-            Some(symbol)
-        } else {
-            None
-        }
-    }
-}
-
 #[derive(Debug, Default)]
-pub struct OperatorAnalyzer {}
+pub struct OperatorAnalyzer;
 
 #[derive(Debug, Default)]
 pub struct OperatorData {
     constant: Option<Constant>,
     ty: Option<Type>,
+    decls: HashMap<Id, Id>,
 }
 
 impl Analysis<Operator> for OperatorAnalyzer {
     type Data = OperatorData;
 
     fn make(egraph: &EGraph, enode: &Operator) -> Self::Data {
+        // FIXME: This doesn't propagate correctly
+        let mut decls = HashMap::new();
+        if let Operator::Let([var, val, _]) = *enode {
+            decls.insert(var, val);
+        }
+
         let ty = typecheck(egraph, enode);
         let constant = evaluate(egraph, enode);
-        OperatorData { constant, ty }
+
+        OperatorData {
+            constant,
+            ty,
+            decls,
+        }
     }
 
     fn merge(&self, to: &mut Self::Data, from: Self::Data) -> bool {
+        let did_change = to.decls != from.decls;
+        to.decls.extend(from.decls);
+
         if to.constant.is_none() && from.constant.is_some() {
             to.constant = from.constant;
             true
         } else {
-            false
+            did_change
         }
     }
 
@@ -155,7 +65,28 @@ impl Analysis<Operator> for OperatorAnalyzer {
         if let Some(constant) = egraph[id].data.constant.clone() {
             let constant = constant.as_operator(egraph);
             let const_id = egraph.add(constant);
+
             egraph.union(id, const_id);
+        }
+
+        // Union variable usages with the variable's value
+        let decls = egraph[id].data.decls.clone();
+        for node in egraph[id].nodes.clone() {
+            for &child in node.children() {
+                for child_node in egraph[child].nodes.clone() {
+                    let new_child = egraph.add(child_node);
+                    egraph[new_child].data.decls.extend(decls.clone());
+                    egraph.union(child, new_child);
+                }
+            }
+
+            if let Operator::Var(var) = node {
+                debug_assert!(egraph[var].nodes.iter().all(Operator::is_symbol));
+
+                if let Some(&body) = egraph[var].data.decls.get(&var) {
+                    egraph.union(id, body);
+                }
+            }
         }
     }
 }
@@ -172,7 +103,6 @@ pub enum Type {
     Lambda(Vec<Type>, Box<Type>),
     Collection(Box<Type>),
     Unknown,
-    Assume,
 }
 
 impl Type {
@@ -193,14 +123,14 @@ impl Type {
 
     /// Returns `true` if the type is [`Assume`].
     pub const fn is_assume(&self) -> bool {
-        matches!(self, Self::Assume)
+        matches!(self, Self::Unknown)
     }
 }
 
 // FIXME: Actual type errors
-fn typecheck(egraph: &EGraph, enode: &Operator) -> Option<Type> {
+fn typecheck(graph: &EGraph, enode: &Operator) -> Option<Type> {
     let x = |&id: &Id| {
-        egraph[id]
+        graph[id]
             .data
             .ty
             .as_ref()
@@ -209,19 +139,14 @@ fn typecheck(egraph: &EGraph, enode: &Operator) -> Option<Type> {
     };
 
     match enode {
-        Operator::Input(_) => Some(Type::Collection(Box::new(Type::Assume))),
-        Operator::Output(_) => Some(Type::Collection(Box::new(Type::Assume))),
-        Operator::OpaqueFunc(_) => Some(Type::Lambda(vec![Type::Assume], Box::new(Type::Assume))),
+        Operator::Input(_) => Some(Type::Collection(Box::new(Type::Unknown))),
+        Operator::Output(_) => Some(Type::Collection(Box::new(Type::Unknown))),
+        Operator::OpaqueFunc(_) => Some(Type::Lambda(vec![Type::Unknown], Box::new(Type::Unknown))),
         Operator::Empty => Some(Type::Collection(Box::new(Type::Unknown))),
 
         Operator::Add([lhs_id, rhs_id]) | Operator::Sub([lhs_id, rhs_id]) => {
             let (lhs, rhs) = (x(lhs_id)?, x(rhs_id)?);
-            if lhs != rhs {
-                panic!(
-                    "{:?} != {:?} for enodes {} and {} in an add node",
-                    lhs, rhs, lhs_id, rhs_id,
-                );
-            }
+            assert_eq!(lhs, rhs, "enodes {} and {} in {:?}", lhs_id, rhs_id, enode);
 
             if lhs.is_uint() {
                 Some(Type::UInt)
@@ -235,22 +160,80 @@ fn typecheck(egraph: &EGraph, enode: &Operator) -> Option<Type> {
             }
         }
 
-        Operator::Eq([lhs_id, rhs_id]) => {
+        Operator::Eq([lhs_id, rhs_id])
+        | Operator::GreaterEq([lhs_id, rhs_id])
+        | Operator::And([lhs_id, rhs_id])
+        | Operator::Or([lhs_id, rhs_id]) => {
             let (lhs, rhs) = (x(lhs_id)?, x(rhs_id)?);
-            if lhs != rhs {
-                panic!(
-                    "{:?} != {:?} for enodes {} and {} in an eq node",
-                    lhs, rhs, lhs_id, rhs_id,
-                );
-            }
+            assert_eq!(lhs, rhs, "enodes {} and {} in {:?}", lhs_id, rhs_id, enode);
 
             Some(Type::Bool)
+        }
+
+        Operator::If([cond_id, then_id, else_id]) => {
+            // TODO: Replace with `assert_matches!(x(cond_id), Some(Type::Bool) | None)`
+            if let Some(cond) = x(cond_id).filter(|cond| cond == &Type::Unknown) {
+                assert_eq!(cond, Type::Bool, "if condition {} must be a bool", cond_id);
+            }
+
+            let (then, else_) = (x(then_id)?, x(else_id)?);
+            assert_eq!(
+                then, else_,
+                "enodes {} and {} in {:?}",
+                then_id, else_id, enode,
+            );
+
+            Some(then)
         }
 
         Operator::Unit => Some(Type::Unit),
         Operator::Int(_) => Some(Type::Int),
         Operator::UInt(_) => Some(Type::UInt),
         Operator::Bool(_) => Some(Type::Bool),
+
+        Operator::Some(inner) => Some(Type::Option(Box::new(x(inner).unwrap_or(Type::Unknown)))),
+        Operator::None => Some(Type::Option(Box::new(Type::Unknown))),
+
+        Operator::Concat(collections) => {
+            assert!(
+                collections.iter().all(|coll| matches!(
+                    x(coll),
+                    Some(Type::Collection(_) | Type::Unknown) | None,
+                )),
+                "concatenation only works on streams {:?}",
+                enode,
+            );
+
+            Some(Type::Collection(Box::new(
+                collections
+                    .iter()
+                    .filter_map(x)
+                    .find(|ty| ty != &Type::Unknown)
+                    .unwrap_or(Type::Unknown),
+            )))
+        }
+
+        // TODO
+        &Operator::Var(var) => {
+            assert!(
+                graph[var].nodes.iter().all(Operator::is_symbol),
+                "variables must be given symbols in {:?}",
+                enode,
+            );
+
+            graph[var].data.decls.get(&var).and_then(x)
+        }
+
+        // TODO
+        &Operator::Let([var, _, _]) => {
+            assert!(
+                graph[var].nodes.iter().all(Operator::is_symbol),
+                "variables must be given symbols in {:?}",
+                enode,
+            );
+
+            None
+        }
 
         // TODO
         Operator::Symbol(_)
@@ -263,23 +246,16 @@ fn typecheck(egraph: &EGraph, enode: &Operator) -> Option<Type> {
         | Operator::Reduce(_)
         | Operator::ArrangeByKey(_)
         | Operator::ArrangeBySelf(_)
-        | Operator::Concat(_)
+        | Operator::Consolidate(_)
+        | Operator::AsCollection(_)
         | Operator::Apply(_)
         | Operator::AndThen(_)
         | Operator::FilterOption(_)
         | Operator::ReverseTuple(_)
-        | Operator::If(_)
-        | Operator::And(_)
-        | Operator::Or(_)
         | Operator::Func(_)
-        | Operator::Let(_)
-        | Operator::Var(_)
-        | Operator::Some(_)
-        | Operator::None
         | Operator::List(_)
         | Operator::Tuple(_)
         | Operator::Case(_)
-        | Operator::GreaterEq(_)
         | Operator::Index(_) => None,
     }
 }
@@ -437,7 +413,7 @@ fn evaluate(egraph: &EGraph, enode: &Operator) -> Option<Constant> {
         Operator::Symbol(_) => None,
 
         // We can't statically evaluate dataflow operators
-        // Or can we...
+        // TODO: Or can we...
         Operator::Input(_)
         | Operator::Output(_)
         | Operator::OpaqueFunc(_)
@@ -451,57 +427,16 @@ fn evaluate(egraph: &EGraph, enode: &Operator) -> Option<Constant> {
         | Operator::Reduce(_)
         | Operator::ArrangeByKey(_)
         | Operator::ArrangeBySelf(_)
-        | Operator::Concat(_) => None,
+        | Operator::Concat(_)
+        | Operator::Consolidate(_)
+        | Operator::AsCollection(_) => None,
     }
 }
 
 #[rustfmt::skip]
 pub fn rules() -> Vec<Rewrite> {
     vec![
-        // Joins are commutative
-        rewrite!(
-            "commutative-join";
-            "(join ?x ?y)"
-                => "(join_map ?y ?x (fun (rev_tuple #0)))"
-        ),
-        rewrite!(
-            "simplify-commutative-join";
-            "(join_map ?y ?x (fun (rev_tuple #0)))"
-                => "(join ?x ?y)"
-        ),
-
-        rewrite!(
-            "commutative-join-map";
-            "(join_map ?x ?y ?map)"
-                => "(join_map ?y ?x (fun (apply ?map (rev_tuple #0))))"
-                // Only express commutativity if we haven't already done it
-                // to this join, otherwise it'll cause exponential
-                // blowup of adding and removing `rev_tuple`s
-                if is_not_rev_tuple("?map")
-        ),
-        rewrite!(
-            "simplify-commutative-join-map";
-            "(join_map ?y ?x (fun (apply ?map (rev_tuple #0))))"
-                => "(join_map ?x ?y ?map)"
-        ),
-
-        rewrite!(
-            "commutative-join-filter";
-            "(join_filter ?x ?y ?filter)"
-            =>
-            "(join_filter ?y ?x
-                (fun (apply ?filter (rev_tuple #0))))"
-            // Only express commutativity if we haven't already done it
-            // to this join, otherwise it'll cause exponential
-            // blowup of adding and removing `rev_tuple`s
-            if is_not_rev_tuple("?filter")
-        ),
-        rewrite!(
-            "simplify-commutative-join-filter";
-            "(join_filter ?y ?x
-                (fun (apply ?filter (rev_tuple #0))))"
-                => "(join_filter ?x ?y ?filter)"
-        ),
+        ..join_laws(),
 
         // Fuse two maps together
         rewrite!(
@@ -590,6 +525,38 @@ pub fn rules() -> Vec<Rewrite> {
         //       that filters and maps values, our own `TraceFilterMap` and maybe even a `TraceMap`
         //       if that could possibly be worth it to avoid arrangements.
 
+        // Consolidation is too high-leveled of a construct for us
+        // so we decompose it into its internal operations
+        //
+        // Note: To prevent extracting it, consolidation is heavily
+        //       penalized within cost analysis
+        rewrite!(
+            "expand-consolidation";
+            "(consolidate ?x)"
+                => "(as_collection (arrange_by_key (map ?x (fun (tuple #0 unit)))) (fun #0))"
+        ),
+
+        // `arrange-by-self` is sugar for mapping by unit and arranging by key,
+        // expand it to try and find some optimization opportunities with
+        // fusing filters and/or maps
+        rewrite!(
+            "expand-arrange-by-self";
+            "(arrange_by_self ?x)"
+                => "(arrange_by_key (map ?x (fun (tuple #0 unit))))"
+        ),
+
+        // Remove redundant arrange->as_collection->arrange chains
+        rewrite!(
+            "eliminate-arrange_key-collection-arrange_key";
+            "(arrange_by_key (as_collection (arrange_by_key ?stream) (fun #0)))"
+                => "(arrange_by_key ?stream)"
+        ),
+        rewrite!(
+            "eliminate-arrange_self-collection-arrange_self";
+            "(arrange_by_self (as_collection (arrange_by_self ?stream) (fun #0)))"
+                => "(arrange_by_self ?stream)"
+        ),
+
         // Mapping by identity is a noop
         rewrite!(
             "remove-identity-map";
@@ -628,44 +595,7 @@ pub fn rules() -> Vec<Rewrite> {
                 => "(arrange_by_self ?stream)"
         ),
 
-        // `and` and `or` are both commutative
-        rewrite!(
-            "commutative-and";
-            "(and ?x ?y)" => "(and ?y ?x)"
-        ),
-        rewrite!(
-            "commutative-or";
-            "(or ?x ?y)" => "(or ?y ?x)"
-        ),
-
-        // An `and` or `or` with duplicate clauses is
-        // reducible to a single invocation
-        rewrite!(
-            "simplify-duplicate-and";
-            "(and ?x ?x)" => "?x"
-        ),
-        rewrite!(
-            "simplify-duplicate-or";
-            "(or ?x ?x)" => "?x"
-        ),
-
-        // Logic operations with boolean literals are trivial to eliminate
-        rewrite!(
-            "eliminate-and-true";
-            "(and ?cond true)" => "?cond"
-        ),
-        rewrite!(
-            "eliminate-and-false";
-            "(and ?cond false)" => "false"
-        ),
-        rewrite!(
-            "eliminate-or-true";
-            "(or ?cond true)" => "true"
-        ),
-        rewrite!(
-            "eliminate-or-false";
-            "(or ?cond false)" => "?cond"
-        ),
+        ..logical_expressions(),
 
         // `(and_then ?x ?y)` where either clause is
         // `none` can be reduced to the `none`
@@ -715,6 +645,106 @@ pub fn rules() -> Vec<Rewrite> {
             "(filter_map ?stream none)" => "empty"
         ),
 
+        ..empty_collections(),
+
+        // Simplify chained option filtering to use logical ands
+        ..rewrite!(
+            "fuse-option-filters";
+            "(filter_opt (filter_opt ?option ?filter1) ?filter2)"
+                <=> "(filter_opt ?option
+                        (fun (and (apply ?filter1 #0)
+                                  (apply ?filter2 #0))))"
+        ),
+
+        // Simplify redundant `rev_tuple` invocations
+        rewrite!(
+            "simplify-rev-tuple";
+            "(rev_tuple (rev_tuple ?tuple))"
+                => "?tuple"
+        ),
+
+        // Eliminate identity functions where possible
+        rewrite!(
+            "eliminate-apply-identity";
+            "(apply (fun #0) ?value)"
+                => "?value"
+        ),
+
+        // Turn filter_map invocations that return an option based
+        // on a boolean condition into a filter
+        rewrite!(
+            "simplify-literal-filter-map-options";
+            "(filter_map ?stream 
+                (fun (if ?condition (some #0) none)))"
+            => "(filter ?stream ?condition)"
+        ),
+
+        rewrite!(
+            "eliminate-redundant-concat";
+            "(concat ?stream)" => "?stream"
+        ),
+        rewrite!(
+            "commutative-concatenation";
+            "(concat ?stream1 ?stream2)"
+                => "(concat ?stream2 ?stream1)"
+        ),
+        ..collapse_concatenation(),
+    ]
+}
+
+#[rustfmt::skip]
+pub fn join_laws() -> Vec<Rewrite> {
+    vec![
+        // Joins are commutative
+        rewrite!(
+            "commutative-join";
+            "(join ?x ?y)"
+                => "(join_map ?y ?x (fun (rev_tuple #0)))"
+        ),
+        rewrite!(
+            "simplify-commutative-join";
+            "(join_map ?y ?x (fun (rev_tuple #0)))"
+                => "(join ?x ?y)"
+        ),
+
+        rewrite!(
+            "commutative-join-map";
+            "(join_map ?x ?y ?map)"
+                => "(join_map ?y ?x (fun (apply ?map (rev_tuple #0))))"
+                // Only express commutativity if we haven't already done it
+                // to this join, otherwise it'll cause exponential
+                // blowup of adding and removing `rev_tuple`s
+                if is_not_rev_tuple("?map")
+        ),
+        rewrite!(
+            "simplify-commutative-join-map";
+            "(join_map ?y ?x (fun (apply ?map (rev_tuple #0))))"
+                => "(join_map ?x ?y ?map)"
+        ),
+
+        rewrite!(
+            "commutative-join-filter";
+            "(join_filter ?x ?y ?filter)"
+            =>
+            "(join_filter ?y ?x
+                (fun (apply ?filter (rev_tuple #0))))"
+            // Only express commutativity if we haven't already done it
+            // to this join, otherwise it'll cause exponential
+            // blowup of adding and removing `rev_tuple`s
+            if is_not_rev_tuple("?filter")
+        ),
+        rewrite!(
+            "simplify-commutative-join-filter";
+            "(join_filter ?y ?x
+                (fun (apply ?filter (rev_tuple #0))))"
+                => "(join_filter ?x ?y ?filter)"
+        ),
+    ]
+}
+
+#[rustfmt::skip]
+fn empty_collections() -> Vec<Rewrite> {
+    vec![
         // Remove redundant expressions surrounding empty collections
         // Joins
         rewrite!(
@@ -754,52 +784,59 @@ pub fn rules() -> Vec<Rewrite> {
             "(arrange_by_self empty)" => "empty"
         ),
 
-        // Simplify chained option filtering to use logical ands
-        ..rewrite!(
-            "fuse-option-filters";
-            "(filter_opt (filter_opt ?option ?filter1) ?filter2)"
-                <=> "(filter_opt ?option
-                        (fun (and (apply ?filter1 #0)
-                                  (apply ?filter2 #0))))"
-        ),
-
-        // Simplify redundant `rev_tuple` invocations
         rewrite!(
-            "simplify-rev-tuple";
-            "(rev_tuple (rev_tuple ?tuple))"
-                => "?tuple"
-        ),
-
-        // Eliminate identity functions where possible
-        rewrite!(
-            "eliminate-apply-identity";
-            "(apply (fun #0) ?value)"
-                => "?value"
-        ),
-
-        // Turn filter_map invocations that return an option based
-        // on a boolean condition into a filter
-        rewrite!(
-            "simplify-literal-filter-map-options";
-            "(filter_map ?stream 
-                (fun (if ?condition (some #0) none)))"
-            => "(filter ?stream ?condition)"
-        ),
-
-        rewrite!(
-            "eliminate-empty-concat";
+            "eliminate-empty-concat/1";
             "(concat)" => "empty"
         ),
+        // TODO: Make a variadic rewrite for this
         rewrite!(
-            "eliminate-redundant-concat";
-            "(concat ?stream)" => "?stream"
+            "eliminate-empty-concat/2";
+            "(concat empty empty)" => "empty"
+        ),
+    ]
+}
+
+#[rustfmt::skip]
+fn logical_expressions() -> Vec<Rewrite> {
+    vec![
+        // `and` and `or` are both commutative
+        rewrite!(
+            "commutative-and";
+            "(and ?x ?y)" => "(and ?y ?x)"
         ),
         rewrite!(
-            "commutative-concatenation";
-            "(concat ?stream1 ?stream2)"
-                => "(concat ?stream2 ?stream1)"
+            "commutative-or";
+            "(or ?x ?y)" => "(or ?y ?x)"
         ),
-        ..collapse_concatenation(),
+
+        // An `and` or `or` with duplicate clauses is
+        // reducible to a single invocation
+        rewrite!(
+            "simplify-duplicate-and";
+            "(and ?x ?x)" => "?x"
+        ),
+        rewrite!(
+            "simplify-duplicate-or";
+            "(or ?x ?x)" => "?x"
+        ),
+
+        // Logic operations with boolean literals are trivial to eliminate
+        rewrite!(
+            "eliminate-and-true";
+            "(and ?cond true)" => "?cond"
+        ),
+        rewrite!(
+            "eliminate-and-false";
+            "(and ?cond false)" => "false"
+        ),
+        rewrite!(
+            "eliminate-or-true";
+            "(or ?cond true)" => "true"
+        ),
+        rewrite!(
+            "eliminate-or-false";
+            "(or ?cond false)" => "?cond"
+        ),
     ]
 }
 
@@ -873,43 +910,6 @@ fn is_not_rev_tuple(var: &str) -> impl Fn(&mut EGraph, Id, &Subst) -> bool {
 
     move |graph, _id, subst| is_not_rev_tuple(subst[var], graph)
 }
-
-// struct CaptureAvoid {
-//     fresh: Var,
-//     pattern: Pattern,
-// }
-//
-// impl CaptureAvoid {
-//     #[track_caller]
-//     fn new(fresh: &str, pattern: &str) -> Self {
-//         let fresh = fresh.parse().unwrap();
-//         let pattern = pattern.parse().unwrap();
-//
-//         Self { fresh, pattern }
-//     }
-// }
-//
-// impl Applier<Operator, OperatorAnalyzer> for CaptureAvoid {
-//     fn apply_one(&self, egraph: &mut EGraph, eclass: Id, subst: &Subst) -> Vec<Id> {
-//         fn unique_symbol() -> Symbol {
-//             static SYMBOL_GENERATOR: AtomicUsize = AtomicUsize::new(0);
-//
-//             Symbol::from(format!(
-//                 "__symbol_{}",
-//                 SYMBOL_GENERATOR.fetch_add(1, Ordering::Release),
-//             ))
-//         }
-//
-//         let mut subst = subst.clone();
-//
-//         // Create the new symbol and substitute it for the fresh variable
-//         let sym = Operator::Symbol(unique_symbol());
-//         subst.insert(self.fresh, egraph.add(sym));
-//
-//         // Apply the inner pattern with the substituted variable
-//         self.pattern.apply_one(egraph, eclass, &subst)
-//     }
-// }
 
 egg::test_fn! {
     fuse_maps,
@@ -1005,6 +1005,20 @@ egg::test_fn! {
         => "(list (fun (+ #0 1)) (fun (+ #0 1)))"
 }
 
+egg::test_fn! {
+    adjacent_arrangements,
+    rules(),
+    "(arrange_by_key (as_collection (arrange_by_key ?x) (fun #0)))"
+        => "(arrange_by_key ?x)"
+}
+
+egg::test_fn! {
+    variable_inlining,
+    rules(),
+    "(let foo 10 (+ foo 10))"
+        => "(let foo 10 20)"
+}
+
 #[test]
 fn join_map_and_tuples_saturate() {
     let expr: RecExpr = "(join_map input0 input1 func0)".parse().unwrap();
@@ -1072,125 +1086,30 @@ fn optimize_fibonacci() {
     let runner = Runner::default().with_expr(&expr).run(&rules());
     let (egraph, root) = (runner.egraph, runner.roots[0]);
 
-    let mut extractor = Extractor::new(&egraph, AstSize);
+    let mut extractor = Extractor::new(&egraph, OperatorCost);
     let (best_cost, best) = extractor.find_best(root);
     println!("{}: {}", best_cost, best.pretty(80));
 
-    let mut extractor = Extractor::new(&egraph, AstDepth);
-    let (best_cost, best) = extractor.find_best(root);
-    println!("{}: {}", best_cost, best.pretty(80));
-}
+    let mut ids: Vec<Id> = egraph.classes().map(|class| class.id).collect();
+    ids.sort();
 
-/// A [De Bruijn index](https://en.wikipedia.org/wiki/De_Bruijn_index)
-// TODO: Add parameter indices
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Index {
-    lambda: usize,
-}
+    for id in ids {
+        let node = &egraph[id];
+        let data = &node.data;
 
-impl Display for Index {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        f.write_char('#')?;
-        Display::fmt(&self.lambda, f)
-    }
-}
+        let mut nodes = node.nodes.clone();
+        nodes.sort();
 
-impl FromStr for Index {
-    type Err = String;
-
-    fn from_str(string: &str) -> Result<Self, Self::Err> {
-        let string = string
-            .strip_prefix("#")
-            .ok_or_else(|| format!("expected '#<int>', got '{}'", string))?;
-
-        let lambda = string
-            .parse::<usize>()
-            .map_err(|err| format!("lambda must be an integer: {:?}", err))?;
-
-        Ok(Self { lambda })
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Input {
-    id: usize,
-}
-
-impl Display for Input {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        f.write_str("input")?;
-        Display::fmt(&self.id, f)
-    }
-}
-
-impl FromStr for Input {
-    type Err = String;
-
-    fn from_str(string: &str) -> Result<Self, Self::Err> {
-        let string = string
-            .strip_prefix("input")
-            .ok_or_else(|| format!("expected 'input<int>', got '{}'", string))?;
-
-        let id = string
-            .parse::<usize>()
-            .map_err(|err| format!("id must be an integer: {:?}", err))?;
-
-        Ok(Self { id })
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Output {
-    id: usize,
-}
-
-impl Display for Output {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        f.write_str("output")?;
-        Display::fmt(&self.id, f)
-    }
-}
-
-impl FromStr for Output {
-    type Err = String;
-
-    fn from_str(string: &str) -> Result<Self, Self::Err> {
-        let string = string
-            .strip_prefix("output")
-            .ok_or_else(|| format!("expected 'output<int>', got '{}'", string))?;
-
-        let id = string
-            .parse::<usize>()
-            .map_err(|err| format!("id must be an integer: {:?}", err))?;
-
-        Ok(Self { id })
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Func {
-    id: usize,
-}
-
-impl Display for Func {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        f.write_str("func")?;
-        Display::fmt(&self.id, f)
-    }
-}
-
-impl FromStr for Func {
-    type Err = String;
-
-    fn from_str(string: &str) -> Result<Self, Self::Err> {
-        let string = string
-            .strip_prefix("func")
-            .ok_or_else(|| format!("expected 'func<int>', got '{}'", string))?;
-
-        let id = string
-            .parse::<usize>()
-            .map_err(|err| format!("id must be an integer: {:?}", err))?;
-
-        Ok(Self { id })
+        print!("{}: {:?}", id, nodes);
+        if let Some(constant) = data.constant.as_ref() {
+            print!(", constant: {:?}", constant);
+        }
+        if let Some(ty) = data.ty.as_ref() {
+            print!(", type: {:?}", ty);
+        }
+        if !data.decls.is_empty() {
+            print!(", decls: {:?}", data.decls);
+        }
+        println!();
     }
 }
