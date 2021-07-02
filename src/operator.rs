@@ -64,11 +64,6 @@ egg::define_language! {
         // `(if ?cond ?then ?else)`
         "if" = If([Id; 3]),
 
-        // `(and ?cond1 ?cond2)`
-        "and" = And([Id; 2]),
-        // `(or ?cond1 ?cond2)`
-        "or" = Or([Id; 2]),
-
         // `(fun ?body)`
         "fun" = Func(Id),
 
@@ -91,10 +86,26 @@ egg::define_language! {
 
         "unit" = Unit,
 
-        "+" = Add([Id; 2]),
-        "-" = Sub([Id; 2]),
-        "==" = Eq([Id; 2]),
+        // `(and ?cond1 ?cond2)`
+        "and" = And([Id; 2]),
+        // `(or ?cond1 ?cond2)`
+        "or" = Or([Id; 2]),
+        // `(not ?x)`
+        "not" = Not(Id),
+
+        "neg" = Neg(Id),
+
+        "add" = Add([Id; 2]),
+        "sub" = Sub([Id; 2]),
+        "mul" = Mul([Id; 2]),
+        "div" = Div([Id; 2]),
+
+        "eq" = Eq([Id; 2]),
+        "neq" = NotEq([Id; 2]),
         ">=" = GreaterEq([Id; 2]),
+        ">" = Greater([Id; 2]),
+        "<=" = LessEq([Id; 2]),
+        "<" = Less([Id; 2]),
 
         // A [De Bruijn index](https://en.wikipedia.org/wiki/De_Bruijn_index)
         Index(Index),
@@ -121,6 +132,10 @@ impl Operator {
         } else {
             None
         }
+    }
+
+    pub const fn is_numeric(&self) -> bool {
+        matches!(self, Self::Int(_) | Self::UInt(_))
     }
 }
 

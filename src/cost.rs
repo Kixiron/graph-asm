@@ -96,8 +96,16 @@ impl CostFunction<Operator> for OperatorCost {
             | Operator::Case(_)
             | Operator::Add(_)
             | Operator::Sub(_)
+            | Operator::Mul(_)
+            | Operator::Div(_)
             | Operator::Eq(_)
-            | Operator::GreaterEq(_) => Self::ONE,
+            | Operator::NotEq(_)
+            | Operator::GreaterEq(_)
+            | Operator::Greater(_)
+            | Operator::LessEq(_)
+            | Operator::Less(_)
+            | Operator::Neg(_)
+            | Operator::Not(_) => Self::ONE,
 
             // We penalize variables *slightly* compared to constant
             // values just to encourage the usage of constants
