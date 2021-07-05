@@ -171,6 +171,10 @@ impl Operator {
             Self::Int(_) | Self::UInt(_) | Self::Bool(_) | Self::None | Self::Unit,
         )
     }
+
+    pub const fn is_concat(&self) -> bool {
+        matches!(self, Self::Concat(_))
+    }
 }
 
 /// A [De Bruijn index](https://en.wikipedia.org/wiki/De_Bruijn_index)

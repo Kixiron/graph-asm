@@ -1,5 +1,6 @@
 mod algebraic_laws;
 mod comparisons;
+mod concatenation;
 mod filters_and_maps;
 mod inline_functions;
 mod joins;
@@ -8,9 +9,10 @@ mod reductions;
 mod tests;
 mod utils;
 
-use crate::{Pattern, Rewrite};
+use crate::Rewrite;
 use algebraic_laws::algebraic_laws;
 use comparisons::comparisons;
+use concatenation::concatenation;
 use egg::rewrite;
 use filters_and_maps::filters_and_maps;
 use inline_functions::inline_functions;
@@ -26,11 +28,11 @@ pub fn rules() -> Vec<Rewrite> {
         ..algebraic_laws(),
         ..logical_expressions(),
         ..empty_collections(),
-        ..collapse_concatenation(),
         ..comparisons(),
         inline_functions(),
         ..filters_and_maps(),
         ..reductions(),
+        ..concatenation(),
 
         // Consolidation is too high-leveled of a construct for us
         // so we decompose it into its internal operations
@@ -181,16 +183,6 @@ pub fn rules() -> Vec<Rewrite> {
                 (fun (if ?condition (some #0) none)))"
             => "(filter ?stream ?condition)"
         ),
-
-        rewrite!(
-            "eliminate-redundant-concat";
-            "(concat ?stream)" => "?stream"
-        ),
-        rewrite!(
-            "commutative-concatenation";
-            "(concat ?stream1 ?stream2)"
-                => "(concat ?stream2 ?stream1)"
-        ),
     ]
 }
 
@@ -235,64 +227,5 @@ fn empty_collections() -> Vec<Rewrite> {
             "eliminate-empty-arrange-by-self";
             "(arrange_by_self empty)" => "empty"
         ),
-
-        rewrite!(
-            "eliminate-empty-concat/1";
-            "(concat)" => "empty"
-        ),
-        // TODO: Make a variadic rewrite for this
-        rewrite!(
-            "eliminate-empty-concat/2";
-            "(concat empty empty)" => "empty"
-        ),
     ]
-}
-
-// Variadic concatenation was a mistake
-// FIXME: This really sucks for a lot of reasons, make a custom rewrite for this
-fn collapse_concatenation() -> Vec<Rewrite> {
-    const COLLAPSE_LEVELS: usize = 25;
-
-    let mut collapses = Vec::with_capacity(COLLAPSE_LEVELS * 2);
-    for i in 1..=COLLAPSE_LEVELS {
-        let name = format!("collapse-concat-start/{}", i);
-
-        let streams = (1..=i)
-            .map(|i| format!("?stream{}", i))
-            .collect::<Vec<_>>()
-            .join(" ");
-
-        let from: Pattern = format!(
-            "(concat (concat ?concat_stream1 ?concat_stream2) {})",
-            streams,
-        )
-        .parse()
-        .unwrap();
-        let to: Pattern = format!("(concat ?concat_stream1 ?concat_stream2 {})", streams)
-            .parse()
-            .unwrap();
-
-        collapses.push(rewrite!(
-            name;
-            from => to
-        ));
-
-        let name = format!("collapse-concat-end/{}", i);
-        let from: Pattern = format!(
-            "(concat {} (concat ?concat_stream1 ?concat_stream2))",
-            streams,
-        )
-        .parse()
-        .unwrap();
-        let to: Pattern = format!("(concat ?concat_stream1 ?concat_stream2 {})", streams)
-            .parse()
-            .unwrap();
-
-        collapses.push(rewrite!(
-            name;
-            from => to
-        ));
-    }
-
-    collapses
 }

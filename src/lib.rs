@@ -14,7 +14,7 @@ pub use types::Type;
 use egg::{Analysis, Id};
 use std::collections::HashSet;
 
-type Pattern = egg::Pattern<Operator>;
+// type Pattern = egg::Pattern<Operator>;
 type RecExpr = egg::RecExpr<Operator>;
 type EGraph = egg::EGraph<Operator, OperatorAnalyzer>;
 type Runner = egg::Runner<Operator, OperatorAnalyzer>;
