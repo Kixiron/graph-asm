@@ -9,35 +9,29 @@ pub fn concatenation() -> Vec<Rewrite> {
             "eliminate-redundant-concat";
             "(concat ?stream)" => "?stream"
         ),
-        // rewrite!(
-        //     "commutative-concatenation";
-        //     "(concat ?stream1 ?stream2)"
-        //         => "(concat ?stream2 ?stream1)"
-        // ),
-
-        rewrite!(
-            "eliminate-empty-concat/1";
-            "(concat)" => "empty"
-        ),
-        // TODO: Make a variadic rewrite for this
-        rewrite!(
-            "eliminate-empty-concat/2";
-            "(concat empty empty)" => "empty"
-        ),
 
         rewrite!(
             "collapse-concatenation";
-            { FindNestedConcatenation }
-                => { CollapseNestedConcatenation }
+            { FindNestedConcat }
+                => { CollapseNestedConcat }
         ),
 
-        // TODO: Remove empty streams from concats
+        rewrite!(
+            "eliminate-empty-concat";
+            { FindConcatWithEmpty }
+                => { RemoveEmptyFromConcat }
+        ),
+
+        rewrite!(
+            "eliminate-uninhabited-concat";
+            "(concat)" => "empty"
+        ),
     ]
 }
 
-struct FindNestedConcatenation;
+struct FindNestedConcat;
 
-impl Searcher<Operator, OperatorAnalyzer> for FindNestedConcatenation {
+impl Searcher<Operator, OperatorAnalyzer> for FindNestedConcat {
     fn search_eclass(&self, graph: &EGraph, eclass: Id) -> Option<SearchMatches> {
         if graph[eclass]
             .nodes
@@ -61,9 +55,9 @@ impl Searcher<Operator, OperatorAnalyzer> for FindNestedConcatenation {
     }
 }
 
-struct CollapseNestedConcatenation;
+struct CollapseNestedConcat;
 
-impl Applier<Operator, OperatorAnalyzer> for CollapseNestedConcatenation {
+impl Applier<Operator, OperatorAnalyzer> for CollapseNestedConcat {
     fn apply_one(&self, graph: &mut EGraph, eclass: Id, _subst: &Subst) -> Vec<Id> {
         let mut flattened_nodes = Vec::with_capacity(graph[eclass].nodes.len());
         for node in graph[eclass].nodes.clone() {
@@ -98,6 +92,56 @@ impl Applier<Operator, OperatorAnalyzer> for CollapseNestedConcatenation {
     }
 }
 
+struct FindConcatWithEmpty;
+
+impl Searcher<Operator, OperatorAnalyzer> for FindConcatWithEmpty {
+    fn search_eclass(&self, graph: &EGraph, eclass: Id) -> Option<SearchMatches> {
+        if graph[eclass]
+            .nodes
+            .iter()
+            .filter(|node| node.is_concat())
+            .flat_map(Language::children)
+            .copied()
+            .any(|child| graph[child].nodes.iter().any(Operator::is_empty))
+        {
+            Some(SearchMatches {
+                eclass,
+                substs: vec![Subst::with_capacity(1)],
+            })
+        } else {
+            None
+        }
+    }
+
+    fn vars(&self) -> Vec<Var> {
+        Vec::new()
+    }
+}
+
+struct RemoveEmptyFromConcat;
+
+impl Applier<Operator, OperatorAnalyzer> for RemoveEmptyFromConcat {
+    fn apply_one(&self, graph: &mut EGraph, eclass: Id, _subst: &Subst) -> Vec<Id> {
+        let mut cleaned_nodes = Vec::with_capacity(graph[eclass].nodes.len());
+        for node in graph[eclass].nodes.clone() {
+            if let Operator::Concat(streams) = node {
+                let streams = streams
+                    .into_iter()
+                    .filter(|&id| !graph[id].nodes.iter().any(Operator::is_empty))
+                    .map(|id| graph.find(id))
+                    .collect();
+
+                let node = graph.add(Operator::Concat(streams));
+                cleaned_nodes.push(graph.find(node));
+            }
+        }
+
+        cleaned_nodes.sort();
+        cleaned_nodes.dedup();
+        cleaned_nodes
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::rewrites::rules;
@@ -107,5 +151,25 @@ mod tests {
         rules(),
         "(concat ?a (concat ?b (concat ?c ?d ?e ?f ?g) ?h ?i ?j) ?k ?l ?m ?n ?o ?p)"
             => "(concat ?a ?b ?c ?d ?e ?f ?g ?h ?i ?j ?k ?l ?m ?n ?o ?p)"
+    }
+
+    egg::test_fn! {
+        empty_streams_are_stripped_from_concat,
+        rules(),
+        "(concat empty ?a ?b ?c empty empty empty)"
+            => "(concat ?a ?b ?c)"
+    }
+
+    egg::test_fn! {
+        nested_empty_streams_are_stripped_from_concat,
+        rules(),
+        "(concat empty ?a ?b ?c (concat empty ?d ?e ?f ?g) empty (concat))"
+            => "(concat ?a ?b ?c ?d ?e ?f ?g)"
+    }
+
+    egg::test_fn! {
+        empty_concat_collapses,
+        rules(),
+        "(concat)" => "empty"
     }
 }
