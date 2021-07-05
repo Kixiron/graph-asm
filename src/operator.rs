@@ -4,6 +4,31 @@ use std::{
     str::FromStr,
 };
 
+// Nodes we need:
+// - filter_arrangement: Corresponds to `Arranged::filter()`
+// - flat_map: Corresponds both to `Collection::flat_map()` and `Arranged::flat_map_ref()`
+// - inspect: Corresponds to `Collection::inspect()`
+// - inspect_batch: Corresponds to `Collection::inspect_batch()`
+// - delay: Corresponds to `Collection::delay()`
+// - delay_batch: Corresponds to `Collection::delay_batch()`
+// - map_difference: Corresponds to `Collection::map_difference()`
+// - join_function: Corresponds to `Collection::join_function()`
+//   - Figure out the applications of this irt optimization, see
+//     https://github.com/frankmcsherry/blog/blob/master/posts/2021-04-26.md#generalizing-linear-operators
+// - map_in_place: A reification of mapping, could allow some good opts by reducing the amount
+//   of data passed around
+// - exchange: Explicit exchanges? Could allow replacing some exchange contracts on arranges
+//   with pipelines in the case that only the timestamp and/or difference are affected and not
+//   the actual data (meaning that the key hasn't changed and therefore the exchange is redundant)
+// - Scopes: Need scope entrance/exiting, fusing enters/exits with filters/maps as well as figuring
+//   out how scopes will work in and of themselves. Maybe represent them primitively like timely
+//   does in the background with explicit `feedback()` operators? Additionally, hoisting
+//   loop/scope invariant code from within them could be really impactful, things like arranging
+//   and then entering a scope could both allow more sharing and reduce the amount of churn
+//   and communication that timely/ddflow experience
+// - explode: Hoisting data into the difference type is a *huge* deal for performance, it can
+//   have massive performance impacts for common idioms like summing up a stream. We should try
+//   as hard as we can to convert reductions into explodes
 egg::define_language! {
     pub enum Operator {
         // An input operator
