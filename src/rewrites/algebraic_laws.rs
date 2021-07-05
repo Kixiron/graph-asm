@@ -1,5 +1,9 @@
-use crate::{rewrites::utils::is_numeric, Rewrite};
-use egg::rewrite;
+use crate::{
+    operator::Operator,
+    rewrites::utils::{is_not_zero, is_numeric},
+    EGraph, OperatorAnalyzer, Rewrite, Type,
+};
+use egg::{rewrite, Applier, Id, Subst, Var};
 use velcro::vec;
 
 #[rustfmt::skip]
@@ -30,6 +34,10 @@ pub fn algebraic_laws() -> Vec<Rewrite> {
         ..rewrite!(
             "add-self-into-mul";
             "(add ?x ?x)" <=> "(mul 2 ?x)"
+        ),
+        ..rewrite!(
+            "negative-add";
+            "(add ?x (neg ?y))" <=> "(sub ?x ?y)"
         ),
 
         // Subtraction
@@ -68,6 +76,10 @@ pub fn algebraic_laws() -> Vec<Rewrite> {
             "destructive-mul";
             "(mul ?x 0)" => "0"
         ),
+        ..rewrite!(
+            "negative-mul";
+            "(mul ?x -1)" <=> "(neg ?x)"
+        ),
 
         // Division
         ..rewrite!(
@@ -89,6 +101,7 @@ pub fn algebraic_laws() -> Vec<Rewrite> {
             "(div ?x ?x)" => "1"
                 // Divisive destruction doesn't apply to floats
                 if is_numeric("?x")
+                if is_not_zero("?x")
         ),
 
         rewrite!(
@@ -96,66 +109,90 @@ pub fn algebraic_laws() -> Vec<Rewrite> {
             "(neg (neg ?x))" => "?x"
         ),
 
-        ..rewrite!(
-            "commutative-compare";
-            "(> ?x ?y)" <=> "(< ?y ?x)"
-        ),
-        ..rewrite!(
-            "commutative-compare-eq";
-            "(>= ?x ?y)" <=> "(<= ?y ?x)"
-        ),
-
+        // If `?x = (add ?x ?y)` then `?y` is zero
         rewrite!(
-            "fuse-greater-compare-chain";
-            "(or (> ?x ?y) (eq ?x ?y))" => "(>= ?x ?y)"
+            "self-add-zero";
+            "(add ?x ?y)" => { ImpliesValue::new("?x", "?y", ValKind::Zero) }
         ),
+        // If `?x = (sub ?x ?y)` then `?y` is zero
         rewrite!(
-            "fuse-less-compare-chain";
-            "(or (< ?x ?y) (eq ?x ?y))" => "(<= ?x ?y)"
+            "self-sub-zero";
+            "(sub ?x ?y)" => { ImpliesValue::new("?x", "?y", ValKind::Zero) }
         ),
+        // If `?x = (div ?x ?y)` then `?y` is one
         rewrite!(
-            "fuse-greater-eq-chain";
-            "(or (>= ?x ?y) (eq ?x ?y))" => "(>= ?x ?y)"
+            "self-mul-one";
+            "(mul ?x ?y)" => { ImpliesValue::new("?x", "?y", ValKind::One) }
         ),
+        // If `?x = (div ?x ?y)` then `?y` is one
         rewrite!(
-            "fuse-less-eq-chain";
-            "(or (<= ?x ?y) (eq ?x ?y))" => "(<= ?x ?y)"
-        ),
-
-        rewrite!(
-            "redundant-greater-comparison";
-            "(or (> ?x ?y) (>= ?x ?y))" => "(>= ?x ?y)"
-        ),
-        rewrite!(
-            "redundant-less-comparison";
-            "(or (< ?x ?y) (<= ?x ?y))" => "(<= ?x ?y)"
-        ),
-
-        rewrite!(
-            "redundant-or-eq-neq";
-            "(or (eq ?x ?y) (neq ?x ?y))" => "true"
-        ),
-        rewrite!(
-            "redundant-and-eq-neq";
-            "(and (eq ?x ?y) (neq ?x ?y))" => "false"
-        ),
-
-        // Comparing against negated versions of things is trivial
-        rewrite!(
-            "eliminate-eq-not-comparison";
-            "(eq ?x (not ?x))" => "false"
-        ),
-        rewrite!(
-            "eliminate-neq-not-comparison";
-            "(neq ?x (not ?x))" => "true"
-        ),
-        rewrite!(
-            "eliminate-eq-neg-comparison";
-            "(eq ?x (neg ?x))" => "false"
-        ),
-        rewrite!(
-            "eliminate-neq-neg-comparison";
-            "(neq ?x (neg ?x))" => "true"
+            "self-div-one";
+            "(sub ?x ?y)" => { ImpliesValue::new("?x", "?y", ValKind::One) }
         ),
     ]
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum ValKind {
+    Zero,
+    One,
+}
+
+#[derive(Debug)]
+struct ImpliesValue {
+    x: Var,
+    y: Var,
+    kind: ValKind,
+}
+
+impl ImpliesValue {
+    #[track_caller]
+    fn new(x: &str, y: &str, kind: ValKind) -> Self {
+        Self {
+            x: x.parse().unwrap(),
+            y: y.parse().unwrap(),
+            kind,
+        }
+    }
+}
+
+impl Applier<Operator, OperatorAnalyzer> for ImpliesValue {
+    fn apply_one(&self, graph: &mut EGraph, eclass: Id, subst: &Subst) -> Vec<Id> {
+        let eclass = graph.find(eclass);
+        let (x, y) = (graph.find(subst[self.x]), graph.find(subst[self.y]));
+
+        // TODO: This isn't ideal since inference can fail
+        if let Some(ty) = graph[eclass]
+            .data
+            .ty
+            .clone()
+            .or_else(|| graph[x].data.ty.clone())
+            .or_else(|| graph[y].data.ty.clone())
+        {
+            let value = match self.kind {
+                ValKind::Zero => 0,
+                ValKind::One => 1,
+            };
+            let value = match ty {
+                Type::Int => Operator::Int(value),
+                Type::UInt => Operator::UInt(value as u64),
+
+                _ => return Vec::new(),
+            };
+
+            if eclass == x {
+                let value = graph.add(value);
+                graph.union(y, value);
+            } else if eclass == y {
+                let value = graph.add(value);
+                graph.union(x, value);
+            }
+        }
+
+        Vec::new()
+    }
+
+    fn vars(&self) -> Vec<Var> {
+        vec![self.x, self.y]
+    }
 }

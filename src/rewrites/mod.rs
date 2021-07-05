@@ -1,110 +1,36 @@
 mod algebraic_laws;
+mod comparisons;
+mod filters_and_maps;
+mod inline_functions;
+mod joins;
 mod logical_exprs;
+mod reductions;
 mod tests;
 mod utils;
 
 use crate::{Pattern, Rewrite};
 use algebraic_laws::algebraic_laws;
+use comparisons::comparisons;
 use egg::rewrite;
+use filters_and_maps::filters_and_maps;
+use inline_functions::inline_functions;
+use joins::joins;
 use logical_exprs::logical_expressions;
-use utils::is_not_rev_tuple;
+use reductions::reductions;
 use velcro::vec;
 
 #[rustfmt::skip]
 pub fn rules() -> Vec<Rewrite> {
     vec![
-        ..join_laws(),
+        ..joins(),
         ..algebraic_laws(),
         ..logical_expressions(),
         ..empty_collections(),
         ..collapse_concatenation(),
-
-        // Fuse two maps together
-        rewrite!(
-            "fuse-map";
-            "(map (map ?stream ?map1) ?map2)"
-                => "(map ?stream (fun (apply ?map2 (apply ?map1 #0))))"
-        ),
-        // Fuse two filters together
-        rewrite!(
-            "fuse-filter";
-            "(filter (filter ?stream ?filter1) ?filter2)"
-            =>
-            "(filter ?stream
-                (fun (and (apply ?filter1 #0)
-                          (apply ?filter2 #0))))"
-        ),
-
-        // Fuse a map and filter into a filter_map
-        rewrite!(
-            "fuse-map-and-filter";
-            "(map (filter ?stream ?filter) ?map)"
-            =>
-            "(filter_map ?stream
-                (fun (if (apply ?filter #0)
-                         (some (apply ?map #0))
-                         none)))"
-        ),
-        // Fuse a filter and a map into a filter_map
-        rewrite!(
-            "fuse-filter-and-map";
-            "(filter (map ?stream ?map) ?filter)"
-            =>
-            "(filter_map ?stream
-                (fun (if (apply (apply ?filter (apply ?map #0)) #0)
-                         (some (apply ?map #0))
-                         none)))"
-        ),
-
-        // Fuse a filter and a filter_map into a single filter_map
-        rewrite!(
-            "fuse-map-filter-map";
-            "(filter (filter_map ?stream ?filter_map) ?filter)"
-            =>
-            "(filter_map ?stream
-                (fun (filter_opt (apply ?filter_map #0) ?filter)))"
-        ),
-
-        // Fuse two filter_maps together
-        rewrite!(
-            "fuse-filter-maps";
-            "(filter_map (filter_map ?stream ?filter_map1) ?filter_map2)"
-                => "(filter_map ?stream (and_then ?filter_map1 ?filter_map2))"
-        ),
-
-        // Fuse a map following a join into a join_map
-        rewrite!(
-            "fuse-join-maps";
-            "(map (join ?arr1 ?arr2) ?map)"
-                => "(join_map ?arr1 ?arr2 ?map)"
-        ),
-
-        // Fuse filters, maps and filter_maps following reductions into the reduction
-        rewrite!(
-            "fuse-reduce-map";
-            "(map (reduce ?arr ?reduce) ?map)"
-                => "(reduce ?arr (apply ?reduce ?map))"
-        ),
-        rewrite!(
-            "fuse-reduce-filter";
-            "(filter (reduce ?arr ?reduce) ?filter)"
-                => "(reduce ?arr (filter_opt (some ?reduce) ?filter))"
-        ),
-        rewrite!(
-            "fuse-reduce-filter-map";
-            "(filter_map (reduce ?arr ?reduce) ?filter_map)"
-                => "(reduce ?arr (and_then (some ?reduce) ?filter_map))"
-        ),
-        // Note: While we *could* fuse filters & maps from before a reduce into the reduce itself,
-        //       we generally don't want to since not filtering and not mapping into a (hopefully)
-        //       more refined data type will cause the arrangement size to grow. However, if we have
-        //       a situation where the target collection already has an arrangement in existence
-        //       followed by a filter and then the reduce (that is, `(reduce (filter ?arranged ?filter) ?reduce)`)
-        //       then we can take advantage of this by filtering the arrangement instead of filtering
-        //       the source collection, arranging it and then reducing it. We could also probably write
-        //       a custom version of `differential_dataflow::trace::wrappers::filter::TraceFilter`
-        //       that filters and maps values, our own `TraceFilterMap` and maybe even a `TraceMap`
-        //       if that could possibly be worth it to avoid arrangements.
+        ..comparisons(),
+        inline_functions(),
+        ..filters_and_maps(),
+        ..reductions(),
 
         // Consolidation is too high-leveled of a construct for us
         // so we decompose it into its internal operations
@@ -120,10 +46,10 @@ pub fn rules() -> Vec<Rewrite> {
         // `arrange-by-self` is sugar for mapping by unit and arranging by key,
         // expand it to try and find some optimization opportunities with
         // fusing filters and/or maps
-        rewrite!(
+        ..rewrite!(
             "expand-arrange-by-self";
             "(arrange_by_self ?x)"
-                => "(arrange_by_key (map ?x (fun (tuple #0 unit))))"
+                <=> "(arrange_by_key (map ?x (fun (tuple #0 unit))))"
         ),
 
         // Remove redundant arrange->as_collection->arrange chains
@@ -264,56 +190,6 @@ pub fn rules() -> Vec<Rewrite> {
             "commutative-concatenation";
             "(concat ?stream1 ?stream2)"
                 => "(concat ?stream2 ?stream1)"
-        ),
-    ]
-}
-
-#[rustfmt::skip]
-pub fn join_laws() -> Vec<Rewrite> {
-    vec![
-        // Joins are commutative
-        rewrite!(
-            "commutative-join";
-            "(join ?x ?y)"
-                => "(join_map ?y ?x (fun (rev_tuple #0)))"
-        ),
-        rewrite!(
-            "simplify-commutative-join";
-            "(join_map ?y ?x (fun (rev_tuple #0)))"
-                => "(join ?x ?y)"
-        ),
-
-        rewrite!(
-            "commutative-join-map";
-            "(join_map ?x ?y ?map)"
-                => "(join_map ?y ?x (fun (apply ?map (rev_tuple #0))))"
-                // Only express commutativity if we haven't already done it
-                // to this join, otherwise it'll cause exponential
-                // blowup of adding and removing `rev_tuple`s
-                if is_not_rev_tuple("?map")
-        ),
-        rewrite!(
-            "simplify-commutative-join-map";
-            "(join_map ?y ?x (fun (apply ?map (rev_tuple #0))))"
-                => "(join_map ?x ?y ?map)"
-        ),
-
-        rewrite!(
-            "commutative-join-filter";
-            "(join_filter ?x ?y ?filter)"
-            =>
-            "(join_filter ?y ?x
-                (fun (apply ?filter (rev_tuple #0))))"
-            // Only express commutativity if we haven't already done it
-            // to this join, otherwise it'll cause exponential
-            // blowup of adding and removing `rev_tuple`s
-            if is_not_rev_tuple("?filter")
-        ),
-        rewrite!(
-            "simplify-commutative-join-filter";
-            "(join_filter ?y ?x
-                (fun (apply ?filter (rev_tuple #0))))"
-                => "(join_filter ?x ?y ?filter)"
         ),
     ]
 }

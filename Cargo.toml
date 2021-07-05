@@ -1,10 +1,11 @@
 [package]
-name = "dgraphs"
+name = "graph-asm"
 version = "0.1.0"
 authors = ["Chase Wilson <me@chasewilson.dev>"]
 edition = "2018"
 
 [dependencies]
+im = "15.0.0"
 egg = "0.6.0"
 velcro = "0.5.3"
 env_logger = "0.8.4"

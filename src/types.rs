@@ -164,7 +164,8 @@ impl Type {
                     enode,
                 );
 
-                graph[var].data.decls.get(&var).and_then(x)
+                // graph[var].data.decls.get(&var).and_then(x)
+                None
             }
 
             // TODO

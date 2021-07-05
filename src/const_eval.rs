@@ -1,7 +1,6 @@
-use std::ops::Neg;
-
 use crate::{operator::Operator, EGraph};
 use egg::Id;
+use std::ops::Neg;
 
 #[derive(Debug, Clone)]
 pub enum Constant {
@@ -12,6 +11,7 @@ pub enum Constant {
     // List(Vec<Constant>),
     // Tuple(Vec<Constant>),
     Option(Option<Box<Self>>),
+    Func(Box<Function>),
 }
 
 impl Constant {
@@ -23,9 +23,17 @@ impl Constant {
         }
     }
 
-    pub fn is_true(&self) -> Option<bool> {
+    pub const fn is_true(&self) -> Option<bool> {
         if let Self::Bool(boolean) = *self {
             Some(boolean)
+        } else {
+            None
+        }
+    }
+
+    pub const fn as_func(&self) -> Option<&Function> {
+        if let Self::Func(func) = self {
+            Some(func)
         } else {
             None
         }
@@ -81,13 +89,19 @@ impl Constant {
             &Operator::UInt(uint) => Some(Self::UInt(uint)),
             &Operator::Bool(boolean) => Some(Self::Bool(boolean)),
 
+            Operator::Func(body) => Some(Self::Func(Box::new(Function::constant(x(body)?)))),
+
+            Operator::Apply([func, _arg]) => match x(func)?.as_func()? {
+                Function::Constant(constant) => Some(constant.clone()),
+                // TODO: Evaluate function bodies when we have constant args
+                Function::Evaluatable(_) => None,
+            },
+
             // TODO
             Operator::Index(_)
             | Operator::Case(_)
-            | Operator::Apply(_)
             | Operator::AndThen(_)
             | Operator::ReverseTuple(_)
-            | Operator::Func(_)
             | Operator::Let(_)
             | Operator::Var(_)
             | Operator::List(_)
@@ -271,18 +285,54 @@ impl Constant {
     }
 
     pub fn as_operator(&self, egraph: &mut EGraph) -> Operator {
-        match self {
+        match *self {
             Self::Unit => Operator::Unit,
-            &Self::Int(int) => Operator::Int(int),
-            &Self::UInt(uint) => Operator::UInt(uint),
-            &Self::Bool(boolean) => Operator::Bool(boolean),
+            Self::Int(int) => Operator::Int(int),
+            Self::UInt(uint) => Operator::UInt(uint),
+            Self::Bool(boolean) => Operator::Bool(boolean),
+
             Self::Option(None) => Operator::None,
-            Self::Option(Some(inner)) => {
+            Self::Option(Some(ref inner)) => {
                 let inner = inner.as_operator(egraph);
                 let inner = egraph.add(inner);
 
                 Operator::Some(inner)
             }
+
+            Self::Func(ref func) => {
+                let body = func.as_operator(egraph);
+                let body = egraph.add(body);
+
+                Operator::Func(body)
+            }
+        }
+    }
+}
+
+// TODO: Right now we don't have any concept of
+//       "function we could statically evaluate"
+//       so the only functions we accept as constant
+//       are those who's bodies are statically known.
+//       In the future we should store some sort of
+//       expression representation (or a reference
+//       into the egraph) that we can attempt to
+//       evaluate using the parameters supplied by
+//       `apply` nodes
+#[derive(Debug, Clone)]
+pub enum Function {
+    Constant(Constant),
+    Evaluatable(Id),
+}
+
+impl Function {
+    pub const fn constant(constant: Constant) -> Self {
+        Self::Constant(constant)
+    }
+
+    pub fn as_operator(&self, egraph: &mut EGraph) -> Operator {
+        match self {
+            Self::Constant(constant) => constant.as_operator(egraph),
+            Self::Evaluatable(_) => todo!(),
         }
     }
 }

@@ -28,3 +28,14 @@ pub fn is_numeric(var: &str) -> impl Fn(&mut EGraph, Id, &Subst) -> bool {
 
     move |graph, _id, subst| graph[subst[var]].nodes.iter().all(Operator::is_numeric)
 }
+
+pub fn is_not_zero(var: &str) -> impl Fn(&mut EGraph, Id, &Subst) -> bool {
+    let var = var.parse().unwrap();
+
+    move |graph, _id, subst| {
+        graph[subst[var]]
+            .nodes
+            .iter()
+            .all(|op| !matches!(op, Operator::Int(0) | Operator::UInt(0)))
+    }
+}

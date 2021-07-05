@@ -93,12 +93,11 @@ egg::define_language! {
         // `(not ?x)`
         "not" = Not(Id),
 
-        "neg" = Neg(Id),
-
         "add" = Add([Id; 2]),
         "sub" = Sub([Id; 2]),
         "mul" = Mul([Id; 2]),
         "div" = Div([Id; 2]),
+        "neg" = Neg(Id),
 
         "eq" = Eq([Id; 2]),
         "neq" = NotEq([Id; 2]),
@@ -137,6 +136,41 @@ impl Operator {
     pub const fn is_numeric(&self) -> bool {
         matches!(self, Self::Int(_) | Self::UInt(_))
     }
+
+    pub const fn is_collection(&self) -> bool {
+        matches!(
+            self,
+            Self::Input(_)
+                | Self::Empty
+                | Self::Map(_)
+                | Self::Filter(_)
+                | Self::FilterMap(_)
+                | Self::Join(_)
+                | Self::JoinMap(_)
+                | Self::JoinFilter(_)
+                // FIXME: Once we decompose reduce `.reduce_abelian()` is arranged
+                | Self::Reduce(_)
+                | Self::Concat(_)
+                | Self::Consolidate(_)
+                | Self::AsCollection(_)
+        )
+    }
+
+    pub const fn is_arrangement(&self) -> bool {
+        matches!(self, Self::ArrangeByKey(_) | Self::ArrangeBySelf(_))
+    }
+
+    pub const fn is_func(&self) -> bool {
+        matches!(self, Self::Func(_))
+    }
+
+    pub fn is_constant(&self) -> bool {
+        // TODO: Self::Some(_), Self::Tuple(_), Self::List(_)
+        matches!(
+            self,
+            Self::Int(_) | Self::UInt(_) | Self::Bool(_) | Self::None | Self::Unit,
+        )
+    }
 }
 
 /// A [De Bruijn index](https://en.wikipedia.org/wiki/De_Bruijn_index)
@@ -144,6 +178,21 @@ impl Operator {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Index {
     lambda: usize,
+}
+
+impl Index {
+    pub const fn is_zero(&self) -> bool {
+        self.lambda == 0
+    }
+
+    pub fn decrement(self) -> Self {
+        let lambda = self
+            .lambda
+            .checked_sub(1)
+            .expect("attempted to decrement an index of level zero");
+
+        Self { lambda }
+    }
 }
 
 impl Display for Index {
