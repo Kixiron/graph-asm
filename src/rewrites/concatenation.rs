@@ -147,6 +147,13 @@ mod tests {
     use crate::rewrites::rules;
 
     egg::test_fn! {
+        single_concat_simplified,
+        rules(),
+        "(concat ?stream)" => "?stream"
+    }
+
+    // https://github.com/vmware/differential-datalog/issues/927
+    egg::test_fn! {
         concatenation_collapses,
         rules(),
         "(concat ?a (concat ?b (concat ?c ?d ?e ?f ?g) ?h ?i ?j) ?k ?l ?m ?n ?o ?p)"

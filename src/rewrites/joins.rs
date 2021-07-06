@@ -49,5 +49,12 @@ pub fn joins() -> Vec<Rewrite> {
                 (fun (apply ?filter (rev_tuple #0))))"
                 => "(join_filter ?x ?y ?filter)"
         ),
+
+        // Fuse a map following a join into a join_map
+        rewrite!(
+            "fuse-join-maps";
+            "(map (join ?arr1 ?arr2) ?map)"
+                => "(join_map ?arr1 ?arr2 ?map)"
+        ),
     ]
 }

@@ -1,4 +1,5 @@
 mod algebraic_laws;
+mod arrangements;
 mod comparisons;
 mod concatenation;
 mod filters_and_maps;
@@ -11,6 +12,7 @@ mod utils;
 
 use crate::Rewrite;
 use algebraic_laws::algebraic_laws;
+use arrangements::arrangements;
 use comparisons::comparisons;
 use concatenation::concatenation;
 use egg::rewrite;
@@ -33,38 +35,7 @@ pub fn rules() -> Vec<Rewrite> {
         ..filters_and_maps(),
         ..reductions(),
         ..concatenation(),
-
-        // Consolidation is too high-leveled of a construct for us
-        // so we decompose it into its internal operations
-        //
-        // Note: To prevent extracting it, consolidation is heavily
-        //       penalized within cost analysis
-        rewrite!(
-            "expand-consolidation";
-            "(consolidate ?x)"
-                => "(as_collection (arrange_by_key (map ?x (fun (tuple #0 unit)))) (fun #0))"
-        ),
-
-        // `arrange-by-self` is sugar for mapping by unit and arranging by key,
-        // expand it to try and find some optimization opportunities with
-        // fusing filters and/or maps
-        ..rewrite!(
-            "expand-arrange-by-self";
-            "(arrange_by_self ?x)"
-                <=> "(arrange_by_key (map ?x (fun (tuple #0 unit))))"
-        ),
-
-        // Remove redundant arrange->as_collection->arrange chains
-        rewrite!(
-            "eliminate-arrange_key-collection-arrange_key";
-            "(arrange_by_key (as_collection (arrange_by_key ?stream) (fun #0)))"
-                => "(arrange_by_key ?stream)"
-        ),
-        rewrite!(
-            "eliminate-arrange_self-collection-arrange_self";
-            "(arrange_by_self (as_collection (arrange_by_self ?stream) (fun #0)))"
-                => "(arrange_by_self ?stream)"
-        ),
+        ..arrangements(),
 
         // Mapping by identity is a noop
         rewrite!(
@@ -74,14 +45,6 @@ pub fn rules() -> Vec<Rewrite> {
         rewrite!(
             "remove-identity-join-map";
             "(join_map ?x ?y (fun #0))" => "(join ?x ?y)"
-        ),
-
-        // A filter applied to the output of a filter_map can be fused
-        // together by using the filter_opt function
-        rewrite!(
-            "fuse-filter-map-filter";
-            "(filter (filter_map ?stream ?filter_map) ?filter)"
-                => "(filter_map ?stream (filter_opt ?filter_map ?filter))"
         ),
 
         // // Joining a collection on itself without changing the

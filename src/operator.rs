@@ -29,11 +29,19 @@ use std::{
 // - explode: Hoisting data into the difference type is a *huge* deal for performance, it can
 //   have massive performance impacts for common idioms like summing up a stream. We should try
 //   as hard as we can to convert reductions into explodes
+// - Delta joins
+// - Half joins
+// - Differentiation
+// - Distinct
+// - Count
+// - Turning things like `.distinct()` or `.count()` into `.distinct_total()` or `.count_total()` when possible
 egg::define_language! {
     pub enum Operator {
         // An input operator
         Input(Input),
         // An output operator
+        // FIXME: This should be `(output ?collection ?output_func)`
+        //        so that we can eliminate unused things
         Output(Output),
 
         // An opaque function

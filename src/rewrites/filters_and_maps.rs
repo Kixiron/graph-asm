@@ -58,11 +58,41 @@ pub fn filters_and_maps() -> Vec<Rewrite> {
                 => "(filter_map ?stream (and_then ?filter_map1 ?filter_map2))"
         ),
 
-        // Fuse a map following a join into a join_map
         rewrite!(
-            "fuse-join-maps";
-            "(map (join ?arr1 ?arr2) ?map)"
-                => "(join_map ?arr1 ?arr2 ?map)"
+            "fuse-as-collection-map";
+            "(map (as_collection ?arrangement ?as_coll) ?map)"
+                => "(as_collection ?arrangement (fun (apply ?map (apply ?as_coll #0))))"
+        ),
+
+        // A filter applied to the output of a filter_map can be fused
+        // together by using the filter_opt function
+        rewrite!(
+            "fuse-filter-map-filter";
+            "(filter (filter_map ?stream ?filter_map) ?filter)"
+                => "(filter_map ?stream (filter_opt ?filter_map ?filter))"
         ),
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::rewrites::rules;
+
+    // https://github.com/vmware/differential-datalog/issues/925
+    egg::test_fn! {
+        maps_get_fused,
+        rules(),
+        "(map (map ?stream ?map1) ?map2)"
+            => "(map ?stream (fun (apply ?map2 (apply ?map1 #0))))"
+    }
+
+    egg::test_fn! {
+        as_collection_and_maps_get_fused,
+        rules(),
+        "(map (as_collection ?arranged ?as_coll) ?map)"
+            => "(as_collection ?arranged (fun (apply ?map (apply ?as_coll #0))))"
+    }
+
+    // TODO: filter+filter, filter+map, map+filter, filter_map+map,
+    //       filter_map+filter, filter_map+filter_map, etc.
 }
