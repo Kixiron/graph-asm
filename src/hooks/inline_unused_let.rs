@@ -80,6 +80,18 @@ mod tests {
     }
 
     egg::test_fn! {
+        variable_inlining_binding_gets_inlined,
+        rules(),
+        runner = Runner::default().with_hook(|runner| {
+            hooks::variable_propagation(&mut runner.egraph, &runner.roots);
+            hooks::inline_unused_let(&mut runner.egraph, &runner.roots);
+            Ok(())
+        }),
+        "(let foo 10 (add (var foo) 10))"
+            => "20"
+    }
+
+    egg::test_fn! {
         inline_unused_let_doesnt_leak,
         rules(),
         runner = Runner::default().with_hook(|runner| {

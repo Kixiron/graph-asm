@@ -121,7 +121,7 @@ egg::test_fn! {
 fn join_map_and_tuples_saturate() {
     let expr: RecExpr = "(join_map input0 input1 func0)".parse().unwrap();
 
-    let runner: Runner = Runner::default()
+    let runner = Runner::default()
         .with_iter_limit(3)
         .with_expr(&expr)
         .run(&rules());
@@ -137,7 +137,7 @@ fn join_map_and_tuples_saturate() {
 fn join_filter_and_tuples_saturate() {
     let expr: RecExpr = "(join_filter input0 input1 func0)".parse().unwrap();
 
-    let runner: Runner = Runner::default()
+    let runner = Runner::default()
         .with_iter_limit(3)
         .with_expr(&expr)
         .run(&rules());

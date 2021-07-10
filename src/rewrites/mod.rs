@@ -1,5 +1,6 @@
 mod algebraic_laws;
 mod arrangements;
+mod bitwise;
 mod comparisons;
 mod concatenation;
 mod filters_and_maps;
@@ -13,6 +14,7 @@ mod utils;
 use crate::Rewrite;
 use algebraic_laws::algebraic_laws;
 use arrangements::arrangements;
+use bitwise::bitwise;
 use comparisons::comparisons;
 use concatenation::concatenation;
 use egg::rewrite;
@@ -36,6 +38,7 @@ pub fn rules() -> Vec<Rewrite> {
         ..reductions(),
         ..concatenation(),
         ..arrangements(),
+        ..bitwise(),
 
         // Mapping by identity is a noop
         rewrite!(

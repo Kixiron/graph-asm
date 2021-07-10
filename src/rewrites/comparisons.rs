@@ -5,12 +5,21 @@ use velcro::vec;
 #[rustfmt::skip]
 pub fn comparisons() -> Vec<Rewrite> {
     vec![
+        // Comparisons are commutative
         ..rewrite!(
-            "commutative-compare";
+            "commutative-compare-eq";
+            "(eq ?x ?y)" <=> "(eq ?y ?x)"
+        ),
+        ..rewrite!(
+            "commutative-compare-neq";
+            "(neq ?x ?y)" <=> "(neq ?y ?x)"
+        ),
+        ..rewrite!(
+            "commutative-compare-less-greater";
             "(> ?x ?y)" <=> "(< ?y ?x)"
         ),
         ..rewrite!(
-            "commutative-compare-eq";
+            "commutative-compare-less-eq-greater-eq";
             "(>= ?x ?y)" <=> "(<= ?y ?x)"
         ),
 

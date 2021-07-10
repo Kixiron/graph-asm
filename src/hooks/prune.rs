@@ -1,5 +1,6 @@
 use crate::{operator::Operator, Runner};
 
+// TODO: Implement this well
 pub fn prune(runner: &mut Runner) {
     let Runner {
         egraph: graph,

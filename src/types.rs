@@ -180,7 +180,12 @@ impl Type {
             }
 
             // TODO
-            Operator::Symbol(_)
+            Operator::Shl(_)
+            | Operator::Shr(_)
+            | Operator::BitXor(_)
+            | Operator::BitOr(_)
+            | Operator::BitAnd(_)
+            | Operator::Symbol(_)
             | Operator::Map(_)
             | Operator::Filter(_)
             | Operator::FilterMap(_)

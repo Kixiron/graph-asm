@@ -1,6 +1,6 @@
 use crate::{
     operator::Operator,
-    rewrites::utils::{is_not_zero, is_numeric},
+    rewrites::utils::{is_not_zero, is_numeric, is_zero},
     EGraph, OperatorAnalyzer, Rewrite, Type,
 };
 use egg::{rewrite, Applier, Id, Subst, Var};
@@ -80,6 +80,14 @@ pub fn algebraic_laws() -> Vec<Rewrite> {
             "negative-mul";
             "(mul ?x -1)" <=> "(neg ?x)"
         ),
+        rewrite!(
+            "multiplicative-inverse";
+            "(mul ?x (div 1 ?x))" => "1"
+        ),
+        ..rewrite!(
+            "neg-to-mul";
+            "(neg ?x)" <=> "(mul ?x -1)"
+        ),
 
         // Division
         ..rewrite!(
@@ -103,10 +111,30 @@ pub fn algebraic_laws() -> Vec<Rewrite> {
                 if is_numeric("?x")
                 if is_not_zero("?x")
         ),
+        ..rewrite!(
+            "divisive-reciprocal";
+            "(div ?x ?y)" <=> "(mul ?x (div 1 ?y))"
+                if is_not_zero("?y")
+        ),
 
         rewrite!(
             "redundant-neg";
             "(neg (neg ?x))" => "?x"
+        ),
+        ..rewrite!(
+            "distributive-neg-add";
+            "(neg (add ?x ?y))"
+                <=> "(add (neg ?x) (neg ?y))"
+        ),
+        ..rewrite!(
+            "distributive-neg-mul";
+            "(neg (mul ?x ?y))"
+                <=> "(mul ?x (neg ?y))"
+        ),
+        rewrite!(
+            "eliminate-neg-mul";
+            "(mul (neg ?x) (neg ?y))"
+                => "(mul ?x ?y)"  
         ),
 
         // If `?x = (add ?x ?y)` then `?y` is zero
@@ -119,15 +147,25 @@ pub fn algebraic_laws() -> Vec<Rewrite> {
             "self-sub-zero";
             "(sub ?x ?y)" => { ImpliesValue::new("?x", "?y", ValKind::Zero) }
         ),
-        // If `?x = (div ?x ?y)` then `?y` is one
+        // If `?x = (mul ?x ?y)` then `?y` is one
         rewrite!(
             "self-mul-one";
             "(mul ?x ?y)" => { ImpliesValue::new("?x", "?y", ValKind::One) }
+                if is_not_zero("?x")
+                if is_not_zero("?y")
+        ),
+        // If `?x = (mul ?x 0)` then `?x` is zero
+        rewrite!(
+            "self-mul-zero";
+            "(mul ?x ?y)" => { ImpliesValue::new("?x", "?y", ValKind::Zero) }
+                if is_zero("?y")
         ),
         // If `?x = (div ?x ?y)` then `?y` is one
         rewrite!(
             "self-div-one";
             "(sub ?x ?y)" => { ImpliesValue::new("?x", "?y", ValKind::One) }
+                if is_not_zero("?x")
+                if is_not_zero("?y")
         ),
     ]
 }

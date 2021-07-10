@@ -1,6 +1,9 @@
 use crate::{operator::Operator, EGraph};
 use egg::Id;
-use std::ops::Neg;
+use std::{
+    convert::TryInto,
+    ops::{BitAnd, BitOr, BitXor, Neg},
+};
 
 #[derive(Debug, Clone)]
 pub enum Constant {
@@ -51,6 +54,12 @@ impl Constant {
             Operator::Sub([lhs, rhs]) => x(lhs)?.sub(&x(rhs)?),
             Operator::Mul([lhs, rhs]) => x(lhs)?.mul(&x(rhs)?),
             Operator::Div([lhs, rhs]) => x(lhs)?.div(&x(rhs)?),
+
+            Operator::Shl([lhs, rhs]) => x(lhs)?.shl(&x(rhs)?),
+            Operator::Shr([lhs, rhs]) => x(lhs)?.shr(&x(rhs)?),
+            Operator::BitXor([lhs, rhs]) => x(lhs)?.bit_xor(&x(rhs)?),
+            Operator::BitOr([lhs, rhs]) => x(lhs)?.bit_or(&x(rhs)?),
+            Operator::BitAnd([lhs, rhs]) => x(lhs)?.bit_and(&x(rhs)?),
 
             Operator::Neg(val) => x(val)?.neg(),
             Operator::Not(val) => x(val)?.not(),
@@ -134,6 +143,7 @@ impl Constant {
 
     pub fn neg(&self) -> Option<Self> {
         match *self {
+            Self::UInt(val) => Some(Self::UInt(val.checked_neg()?)),
             Self::Int(val) => Some(Self::Int(val.neg())),
 
             _ => None,
@@ -181,6 +191,64 @@ impl Constant {
         match (self, other) {
             (&Self::Int(lhs), &Self::Int(rhs)) => Some(Self::Int(lhs.checked_div(rhs)?)),
             (&Self::UInt(lhs), &Self::UInt(rhs)) => Some(Self::UInt(lhs.checked_div(rhs)?)),
+
+            (_, _) => None,
+        }
+    }
+
+    // Operator::BitOr([lhs, rhs]) => x(lhs).bit_or(&x(rhs)?),
+    // Operator::BitAnd([lhs, rhs]) => x(lhs).bit_and(&x(rhs)?),
+    pub fn shl(&self, other: &Self) -> Option<Self> {
+        match (self, other) {
+            (&Self::Int(lhs), &Self::Int(rhs)) => {
+                Some(Self::Int(lhs.checked_shl(rhs.try_into().ok()?)?))
+            }
+            (&Self::UInt(lhs), &Self::UInt(rhs)) => {
+                Some(Self::UInt(lhs.checked_shl(rhs.try_into().ok()?)?))
+            }
+
+            (_, _) => None,
+        }
+    }
+
+    pub fn shr(&self, other: &Self) -> Option<Self> {
+        match (self, other) {
+            (&Self::Int(lhs), &Self::Int(rhs)) => {
+                Some(Self::Int(lhs.checked_shr(rhs.try_into().ok()?)?))
+            }
+            (&Self::UInt(lhs), &Self::UInt(rhs)) => {
+                Some(Self::UInt(lhs.checked_shr(rhs.try_into().ok()?)?))
+            }
+
+            (_, _) => None,
+        }
+    }
+
+    pub fn bit_xor(&self, other: &Self) -> Option<Self> {
+        match (self, other) {
+            (&Self::Bool(lhs), &Self::Bool(rhs)) => Some(Self::Bool(lhs.bitxor(rhs))),
+            (&Self::Int(lhs), &Self::Int(rhs)) => Some(Self::Int(lhs.bitxor(rhs))),
+            (&Self::UInt(lhs), &Self::UInt(rhs)) => Some(Self::UInt(lhs.bitxor(rhs))),
+
+            (_, _) => None,
+        }
+    }
+
+    pub fn bit_or(&self, other: &Self) -> Option<Self> {
+        match (self, other) {
+            (&Self::Bool(lhs), &Self::Bool(rhs)) => Some(Self::Bool(lhs.bitor(rhs))),
+            (&Self::Int(lhs), &Self::Int(rhs)) => Some(Self::Int(lhs.bitor(rhs))),
+            (&Self::UInt(lhs), &Self::UInt(rhs)) => Some(Self::UInt(lhs.bitor(rhs))),
+
+            (_, _) => None,
+        }
+    }
+
+    pub fn bit_and(&self, other: &Self) -> Option<Self> {
+        match (self, other) {
+            (&Self::Bool(lhs), &Self::Bool(rhs)) => Some(Self::Bool(lhs.bitand(rhs))),
+            (&Self::Int(lhs), &Self::Int(rhs)) => Some(Self::Int(lhs.bitand(rhs))),
+            (&Self::UInt(lhs), &Self::UInt(rhs)) => Some(Self::UInt(lhs.bitand(rhs))),
 
             (_, _) => None,
         }

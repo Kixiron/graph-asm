@@ -124,6 +124,7 @@ egg::define_language! {
         // `(or ?cond1 ?cond2)`
         "or" = Or([Id; 2]),
         // `(not ?x)`
+        // Functions both as a logical and a bitwise not
         "not" = Not(Id),
 
         "add" = Add([Id; 2]),
@@ -131,6 +132,14 @@ egg::define_language! {
         "mul" = Mul([Id; 2]),
         "div" = Div([Id; 2]),
         "neg" = Neg(Id),
+
+        "shl" = Shl([Id; 2]),
+        "shr" = Shr([Id; 2]),
+        "xor" = BitXor([Id; 2]),
+        // TODO: Can/should logical and & logical or be overloaded
+        //       to function as bitwise or & bitwise and?
+        "bitor" = BitOr([Id; 2]),
+        "bitand" = BitAnd([Id; 2]),
 
         "eq" = Eq([Id; 2]),
         "neq" = NotEq([Id; 2]),
