@@ -5,6 +5,9 @@ use std::{
 };
 
 // Nodes we need:
+// - looping
+//   - Phi nodes
+//   - Theta nodes
 // - filter_arrangement: Corresponds to `Arranged::filter()`
 // - flat_map: Corresponds both to `Collection::flat_map()` and `Arranged::flat_map_ref()`
 // - inspect: Corresponds to `Collection::inspect()`
@@ -77,6 +80,8 @@ egg::define_language! {
         "consolidate" = Consolidate(Id),
         "as_collection" = AsCollection([Id; 2]),
 
+        // TODO: Lots of these don't need to be intrinsic,
+        //       they can just be implicit by using a catch-all case
         // `(apply ?func1 ?value)`
         "apply" = Apply([Id; 2]),
 
@@ -113,9 +118,6 @@ egg::define_language! {
         "list" = List(Vec<Id>),
         // `(tuple ?elems...)`
         "tuple" = Tuple(Box<[Id]>),
-
-        // `(case ?var ?pattern ?in)`
-        "case" = Case([Id; 3]),
 
         "unit" = Unit,
 
@@ -155,6 +157,14 @@ egg::define_language! {
         UInt(u64),
         Bool(bool),
         Symbol(Symbol),
+
+        // Currently contains:
+        // -`(untuple ?idx:uint ?tuple:tuple)`
+        // - `(typed ?type:type ?value)` where `?type` is a type name
+        //   within a `Symbol` node (`i64`, `u64`, `bool`, etc.)
+        // - `(do_while ?body ?while)` A tail-controlled loop
+        // - `(phi ..?args)` A phi node
+        Other(Symbol, Vec<Id>),
     }
 }
 
@@ -175,6 +185,22 @@ impl Operator {
         }
     }
 
+    pub const fn as_uint(&self) -> Option<u64> {
+        if let Self::UInt(uint) = *self {
+            Some(uint)
+        } else {
+            None
+        }
+    }
+
+    pub const fn as_int(&self) -> Option<i64> {
+        if let Self::Int(int) = *self {
+            Some(int)
+        } else {
+            None
+        }
+    }
+
     pub const fn is_numeric(&self) -> bool {
         matches!(self, Self::Int(_) | Self::UInt(_))
     }
@@ -190,7 +216,8 @@ impl Operator {
                 | Self::Join(_)
                 | Self::JoinMap(_)
                 | Self::JoinFilter(_)
-                // FIXME: Once we decompose reduce `.reduce_abelian()` is arranged
+                // FIXME: Once we decompose reduce into `.reduce_abelian()`
+                // the output of `.reduce_abelian()` is arranged
                 | Self::Reduce(_)
                 | Self::Concat(_)
                 | Self::Consolidate(_)
@@ -257,7 +284,7 @@ impl FromStr for Index {
 
     fn from_str(string: &str) -> Result<Self, Self::Err> {
         let string = string
-            .strip_prefix("#")
+            .strip_prefix('#')
             .ok_or_else(|| format!("expected '#<int>', got '{}'", string))?;
 
         let lambda = string

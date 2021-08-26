@@ -1,9 +1,13 @@
-mod contains_function;
+mod dot;
 mod inline_unused_let;
 mod prune;
+mod topk;
+mod typecheck;
 mod variable_propagation;
 
-pub use contains_function::contains_function_call;
+pub use dot::{png, svg};
 pub use inline_unused_let::inline_unused_let;
 pub use prune::prune;
+pub use topk::debug_topk;
+pub use typecheck::typecheck;
 pub use variable_propagation::variable_propagation;

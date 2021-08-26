@@ -94,6 +94,7 @@ mod tests {
 
     #[test]
     fn inlining_saturates() {
+        // Equivalent to `(add 3 (add 2 1))` or `6`
         let expr: RecExpr = "(apply (fun (apply (fun (apply (fun (add #0 (add #1 #2))) 3)) 2)) 1)"
             .parse()
             .unwrap();

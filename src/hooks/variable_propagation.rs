@@ -2,6 +2,9 @@ use crate::{operator::Operator, EGraph};
 use egg::{Id, Language};
 use im::{HashMap, HashSet};
 
+// FIXME: There's subtle interactions between this and nesting that can
+//        end really badly. Requiring all variable names to be unique
+//        may address it, but I'm not really sure
 pub fn variable_propagation(graph: &mut EGraph, roots: &[Id]) {
     let mut to_union = Vec::new();
     let mut stack: Vec<_> = roots

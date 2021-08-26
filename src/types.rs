@@ -31,11 +31,6 @@ impl Type {
         matches!(self, Self::Unknown)
     }
 
-    /// Returns `true` if the type is [`Assume`].
-    pub const fn is_assume(&self) -> bool {
-        matches!(self, Self::Unknown)
-    }
-
     pub const fn is_bool(&self) -> bool {
         matches!(self, Self::Bool)
     }
@@ -51,11 +46,49 @@ impl Type {
                 .data
                 .ty
                 .as_ref()
-                .filter(|ty| !ty.is_unknown() && !ty.is_assume())
+                .filter(|ty| !ty.is_unknown())
                 .cloned()
         };
 
         match enode {
+            Operator::Unit => Some(Self::Unit),
+            Operator::Int(_) => Some(Self::Int),
+            Operator::UInt(_) => Some(Self::UInt),
+            Operator::Bool(_) => Some(Self::Bool),
+
+            Operator::Tuple(elements) => {
+                let types = elements
+                    .iter()
+                    .map(|elem| x(elem).unwrap_or(Self::Unknown))
+                    .collect();
+
+                Some(Self::Tuple(types))
+            }
+
+            Operator::List(elements) => {
+                let mut ty = Self::Unknown;
+                for elem in elements {
+                    if let Some(elem_ty) = x(elem) {
+                        if ty.is_unknown() {
+                            ty = elem_ty;
+                        } else if !elem_ty.is_unknown() {
+                            assert_eq!(
+                                elem_ty, ty,
+                                "{:?} and {:?} (enode {}) in {:?}, lists have a single type",
+                                ty, elem_ty, elem, enode,
+                            );
+                        }
+                    }
+                }
+
+                Some(Self::List(Box::new(ty)))
+            }
+
+            Operator::Some(inner) => {
+                Some(Self::Option(Box::new(x(inner).unwrap_or(Self::Unknown))))
+            }
+            Operator::None => Some(Self::Option(Box::new(Self::Unknown))),
+
             Operator::Input(_) | Operator::Output(_) => {
                 Some(Self::Collection(Box::new(Self::Unknown)))
             }
@@ -67,7 +100,12 @@ impl Type {
             Operator::Add([lhs_id, rhs_id])
             | Operator::Sub([lhs_id, rhs_id])
             | Operator::Mul([lhs_id, rhs_id])
-            | Operator::Div([lhs_id, rhs_id]) => {
+            | Operator::Div([lhs_id, rhs_id])
+            | Operator::Shl([lhs_id, rhs_id])
+            | Operator::Shr([lhs_id, rhs_id])
+            | Operator::BitXor([lhs_id, rhs_id])
+            | Operator::BitOr([lhs_id, rhs_id])
+            | Operator::BitAnd([lhs_id, rhs_id]) => {
                 let (lhs, rhs) = (x(lhs_id)?, x(rhs_id)?);
                 assert_eq!(lhs, rhs, "enodes {} and {} in {:?}", lhs_id, rhs_id, enode);
 
@@ -105,8 +143,11 @@ impl Type {
             | Operator::Less([lhs_id, rhs_id])
             | Operator::And([lhs_id, rhs_id])
             | Operator::Or([lhs_id, rhs_id]) => {
-                let (lhs, rhs) = (x(lhs_id)?, x(rhs_id)?);
-                assert_eq!(lhs, rhs, "enodes {} and {} in {:?}", lhs_id, rhs_id, enode);
+                if let (Some(lhs), Some(rhs)) = (x(lhs_id), x(rhs_id)) {
+                    if !lhs.is_unknown() && !rhs.is_unknown() {
+                        assert_eq!(lhs, rhs, "enodes {} and {} in {:?}", lhs_id, rhs_id, enode);
+                    }
+                }
 
                 Some(Self::Bool)
             }
@@ -126,16 +167,6 @@ impl Type {
 
                 Some(then)
             }
-
-            Operator::Unit => Some(Self::Unit),
-            Operator::Int(_) => Some(Self::Int),
-            Operator::UInt(_) => Some(Self::UInt),
-            Operator::Bool(_) => Some(Self::Bool),
-
-            Operator::Some(inner) => {
-                Some(Self::Option(Box::new(x(inner).unwrap_or(Self::Unknown))))
-            }
-            Operator::None => Some(Self::Option(Box::new(Self::Unknown))),
 
             Operator::Concat(collections) => {
                 assert!(
@@ -179,13 +210,57 @@ impl Type {
                 None
             }
 
+            Operator::Other(name, args) => match name.as_str() {
+                // Untupling/tuple access
+                "untuple" => {
+                    // FIXME: `assert_matches!()`
+                    assert!(matches!(
+                        x(&args[0]),
+                        Some(Type::Int | Type::UInt | Type::Unknown),
+                    ));
+
+                    let tuple = x(&args[1])?;
+
+                    if let Type::Tuple(mut tuple) = tuple {
+                        let index = &graph[args[0]].nodes[0];
+                        let index = index
+                            .as_uint()
+                            .or_else(|| index.as_int().map(|int| int as u64))
+                            .unwrap() as usize;
+
+                        Some(tuple.remove(index))
+                    } else {
+                        // FIXME: Sometimes it's not a tuple?
+                        None
+                    }
+                }
+
+                // Explicitly typed nodes
+                "typed" => {
+                    let type_name = graph[args[0]]
+                        .nodes
+                        .iter()
+                        .find_map(|node| node.as_symbol())
+                        .unwrap();
+
+                    let ty = match type_name.as_str() {
+                        "bool" => Type::Bool,
+                        "i64" => Type::Int,
+                        "u64" => Type::UInt,
+                        "unit" => Type::Unit,
+
+                        // Unknown type name
+                        _ => return None,
+                    };
+
+                    Some(ty)
+                }
+
+                _ => None,
+            },
+
             // TODO
-            Operator::Shl(_)
-            | Operator::Shr(_)
-            | Operator::BitXor(_)
-            | Operator::BitOr(_)
-            | Operator::BitAnd(_)
-            | Operator::Symbol(_)
+            Operator::Symbol(_)
             | Operator::Map(_)
             | Operator::Filter(_)
             | Operator::FilterMap(_)
@@ -202,9 +277,6 @@ impl Type {
             | Operator::FilterOption(_)
             | Operator::ReverseTuple(_)
             | Operator::Func(_)
-            | Operator::List(_)
-            | Operator::Tuple(_)
-            | Operator::Case(_)
             | Operator::Index(_) => None,
         }
     }

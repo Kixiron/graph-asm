@@ -45,7 +45,7 @@ fn find_used_vars(
                 output_used_variables.extend(find_used_vars(
                     graph,
                     child,
-                    &node,
+                    node,
                     used_variables.clone(),
                     visited.update(child),
                     to_union,

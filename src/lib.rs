@@ -7,12 +7,13 @@ mod types;
 
 pub use const_eval::Constant;
 pub use cost::OperatorCost;
+// pub use hooks::typecheck::Type;
 pub use operator::{Func, Index, Input, Operator, Output};
 pub use rewrites::rules;
 pub use types::Type;
 
 use egg::{Analysis, Id};
-use std::collections::HashSet;
+use std::ops::Not;
 
 // type Pattern = egg::Pattern<Operator>;
 type RecExpr = egg::RecExpr<Operator>;
@@ -21,8 +22,12 @@ type Runner = egg::Runner<Operator, OperatorAnalyzer>;
 type Rewrite = egg::Rewrite<Operator, OperatorAnalyzer>;
 
 #[derive(Debug, Default)]
-pub struct OperatorAnalyzer {
-    contains_non_opaque_function_call: HashSet<Id>,
+pub struct OperatorAnalyzer {}
+
+impl OperatorAnalyzer {
+    pub fn new() -> Self {
+        Self {}
+    }
 }
 
 #[derive(Debug, Default)]
@@ -43,23 +48,39 @@ impl Analysis<Operator> for OperatorAnalyzer {
         OperatorData { constant, ty, meta }
     }
 
+    // TODO: There's gotta be a better way of merging data
     fn merge(&self, to: &mut Self::Data, from: Self::Data) -> bool {
-        // TODO: Merge metadata
+        let mut did_change = false;
 
         if to.constant.is_none() && from.constant.is_some() {
             to.constant = from.constant;
-            true
-        } else {
-            false
+            did_change = true;
         }
+
+        if to.ty.is_none() && from.ty.is_some() {
+            to.ty = from.ty;
+            did_change = true;
+        }
+
+        if to.meta.parity.is_none() && from.meta.parity.is_some() {
+            to.meta.parity = from.meta.parity;
+            did_change = true;
+        }
+
+        if to.meta.is_power_of_two.is_none() && from.meta.is_power_of_two.is_some() {
+            to.meta.is_power_of_two = from.meta.is_power_of_two;
+            did_change = true;
+        }
+
+        did_change
     }
 
     fn modify(graph: &mut EGraph, id: Id) {
         if let Some(constant) = graph[id].data.constant.clone() {
-            let constant = constant.as_operator(graph);
-            let const_id = graph.add(constant);
-
-            graph.union(id, const_id);
+            if let Some(constant) = constant.as_operator(graph) {
+                let const_id = graph.add(constant);
+                graph.union(id, const_id);
+            }
         }
     }
 }
@@ -68,6 +89,8 @@ impl Analysis<Operator> for OperatorAnalyzer {
 pub struct Metadata {
     parity: Option<Parity>,
     is_power_of_two: Option<bool>,
+    // TODO: How should I propagate this upwards?
+    depends_on_phi: bool,
 }
 
 /// The parity of a value, whether its odd or even
@@ -119,6 +142,17 @@ impl Parity {
     }
 }
 
+impl Not for Parity {
+    type Output = Self;
+
+    fn not(self) -> Self::Output {
+        match self {
+            Self::Even => Self::Odd,
+            Self::Odd => Self::Even,
+        }
+    }
+}
+
 impl Metadata {
     pub fn collect(graph: &EGraph, node: &Operator, constant: Option<&Constant>) -> Self {
         let x = |&id| &graph[id].data.meta;
@@ -127,7 +161,11 @@ impl Metadata {
         match node {
             &Operator::Int(int) => {
                 meta.parity = Some(Parity::even_if(int.rem_euclid(2) == 0));
-                meta.is_power_of_two = Some(int.abs().count_ones() == 1);
+                meta.is_power_of_two = Some(if int.is_negative() {
+                    false
+                } else {
+                    (int as u64).is_power_of_two()
+                });
             }
 
             &Operator::UInt(uint) => {
@@ -142,14 +180,10 @@ impl Metadata {
                 } else if let (Some(lhs), Some(rhs)) = (x(lhs).parity, x(rhs).parity) {
                     match (lhs.is_even(), rhs.is_even()) {
                         // even ± even = even, odd ± odd = even
-                        (true, true) | (false, false) => {
-                            meta.parity = Some(Parity::even());
-                        }
+                        (true, true) | (false, false) => meta.parity = Some(Parity::even()),
 
                         // even ± odd = odd
-                        (true, false) | (false, true) => {
-                            meta.parity = Some(Parity::odd());
-                        }
+                        (true, false) | (false, true) => meta.parity = Some(Parity::odd()),
                     }
                 }
             }
@@ -171,6 +205,44 @@ impl Metadata {
                 }
             }
 
+            Operator::Not(inner) => {
+                let inner = x(inner);
+                meta.parity = inner.parity;
+                meta.is_power_of_two = inner.is_power_of_two;
+            }
+
+            Operator::Other(name, args) => match name.as_str() {
+                // TODO: Propagate data through tuple accesses
+                "untuple" => {}
+
+                "phi" => {
+                    let arg_meta = args.iter().map(x);
+
+                    let parity = arg_meta
+                        .clone()
+                        .map(|meta| meta.parity)
+                        .reduce(|left, right| {
+                            left.zip(right)
+                                .and_then(|(left, right)| (left == right).then(|| left))
+                        })
+                        .flatten();
+                    meta.parity = parity;
+
+                    let is_power_of_two = arg_meta
+                        .map(|meta| meta.is_power_of_two)
+                        .reduce(|left, right| {
+                            left.zip(right)
+                                .and_then(|(left, right)| (left == right).then(|| left))
+                        })
+                        .flatten();
+                    meta.is_power_of_two = is_power_of_two;
+
+                    meta.depends_on_phi = true;
+                }
+
+                _ => {}
+            },
+
             // TODO
             Operator::Shl(_)
             | Operator::Shr(_)
@@ -189,11 +261,9 @@ impl Metadata {
             | Operator::None
             | Operator::List(_)
             | Operator::Tuple(_)
-            | Operator::Case(_)
             | Operator::Unit
             | Operator::And(_)
             | Operator::Or(_)
-            | Operator::Not(_)
             | Operator::Div(_)
             | Operator::Neg(_)
             | Operator::Eq(_)
@@ -236,7 +306,11 @@ impl Metadata {
                     meta.is_power_of_two = Some(uint.is_power_of_two());
                 }
 
-                Constant::Bool(_) | Constant::Option(_) | Constant::Func(_) | Constant::Unit => {}
+                Constant::Bool(_)
+                | Constant::Option(_)
+                | Constant::Func(_)
+                | Constant::Unit
+                | Constant::Tuple(_) => {}
             }
         }
 

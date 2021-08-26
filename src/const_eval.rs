@@ -12,7 +12,7 @@ pub enum Constant {
     UInt(u64),
     Bool(bool),
     // List(Vec<Constant>),
-    // Tuple(Vec<Constant>),
+    Tuple(Vec<Option<Constant>>),
     Option(Option<Box<Self>>),
     Func(Box<Function>),
 }
@@ -106,15 +106,48 @@ impl Constant {
                 Function::Evaluatable(_) => None,
             },
 
+            Operator::Tuple(elements) => {
+                let elements: Vec<_> = elements.iter().map(|elem| x(elem)).collect();
+
+                Some(Constant::Tuple(elements))
+            }
+
+            Operator::Other(name, args) => match name.as_str() {
+                "untuple" => {
+                    // FIXME: `assert_matches!()`
+                    assert!(matches!(
+                        x(&args[0]),
+                        Some(Constant::Int(_) | Constant::UInt(_)),
+                    ));
+
+                    let tuple = x(&args[1])?;
+
+                    if let Constant::Tuple(mut tuple) = tuple {
+                        let index = &egraph[args[0]].nodes[0];
+                        let index = index
+                            .as_uint()
+                            .or_else(|| index.as_int().map(|int| int as u64))
+                            .unwrap() as usize;
+
+                        tuple.remove(index)
+                    } else {
+                        panic!(
+                            "expected tuple, got {:?} (id: {}) in `untuple`: {:?}",
+                            tuple, args[1], enode,
+                        )
+                    }
+                }
+
+                _ => None,
+            },
+
             // TODO
             Operator::Index(_)
-            | Operator::Case(_)
             | Operator::AndThen(_)
             | Operator::ReverseTuple(_)
             | Operator::Let(_)
             | Operator::Var(_)
-            | Operator::List(_)
-            | Operator::Tuple(_) => None,
+            | Operator::List(_) => None,
 
             // Symbols don't really mean anything, only
             // variable uses do
@@ -352,8 +385,8 @@ impl Constant {
         }
     }
 
-    pub fn as_operator(&self, egraph: &mut EGraph) -> Operator {
-        match *self {
+    pub fn as_operator(&self, egraph: &mut EGraph) -> Option<Operator> {
+        Some(match *self {
             Self::Unit => Operator::Unit,
             Self::Int(int) => Operator::Int(int),
             Self::UInt(uint) => Operator::UInt(uint),
@@ -361,19 +394,31 @@ impl Constant {
 
             Self::Option(None) => Operator::None,
             Self::Option(Some(ref inner)) => {
-                let inner = inner.as_operator(egraph);
+                let inner = inner.as_operator(egraph)?;
                 let inner = egraph.add(inner);
 
                 Operator::Some(inner)
             }
 
             Self::Func(ref func) => {
-                let body = func.as_operator(egraph);
+                let body = func.as_operator(egraph)?;
                 let body = egraph.add(body);
 
                 Operator::Func(body)
             }
-        }
+
+            Self::Tuple(ref elements) => {
+                let elements: Option<Vec<_>> = elements
+                    .iter()
+                    .map(|elem| {
+                        let elem = elem.as_ref()?.as_operator(egraph)?;
+                        Some(egraph.add(elem))
+                    })
+                    .collect();
+
+                elements.map(|elements| Operator::Tuple(elements.into_boxed_slice()))?
+            }
+        })
     }
 }
 
@@ -397,10 +442,21 @@ impl Function {
         Self::Constant(constant)
     }
 
-    pub fn as_operator(&self, egraph: &mut EGraph) -> Operator {
+    pub fn as_operator(&self, egraph: &mut EGraph) -> Option<Operator> {
         match self {
             Self::Constant(constant) => constant.as_operator(egraph),
             Self::Evaluatable(_) => todo!(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::rules;
+
+    egg::test_fn! {
+        tuple_propagation,
+        rules(),
+        "(untuple 0 (tuple 1 2 3))" => "1"
     }
 }

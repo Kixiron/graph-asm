@@ -1,5 +1,5 @@
-use crate::Rewrite;
-use egg::rewrite;
+use crate::{EGraph, Operator, OperatorAnalyzer, Rewrite};
+use egg::{rewrite, Applier, Id, Subst, Var};
 use velcro::vec;
 
 #[rustfmt::skip]
@@ -79,5 +79,49 @@ pub fn logical_expressions() -> Vec<Rewrite> {
             "negation-of-disjunction";
             "(not (or ?x ?y))" <=> "(and (not ?x) (not ?y))"
         ),
+
+        // if `?x = (not ?x)` then that node can be eliminated
+        // since it's logically incoherent
+        rewrite!(
+            "eliminate-incoherent-not-chain";
+            "(not ?x)" => { IncoherentNotChain::new("?x") }
+        ),
     ]
+}
+
+#[derive(Debug)]
+pub struct IncoherentNotChain {
+    x: Var,
+}
+
+impl IncoherentNotChain {
+    #[track_caller]
+    pub fn new(x: &str) -> Self {
+        Self {
+            x: x.parse().unwrap(),
+        }
+    }
+}
+
+impl Applier<Operator, OperatorAnalyzer> for IncoherentNotChain {
+    fn apply_one(&self, graph: &mut EGraph, eclass: Id, subst: &Subst) -> Vec<Id> {
+        let eclass = graph.find(eclass);
+        let x = graph.find(subst[self.x]);
+
+        if graph[x].nodes.len() > 1 {
+            graph[x].nodes.retain(|child| {
+                if let Operator::Not(inner) = *child {
+                    inner != eclass
+                } else {
+                    true
+                }
+            });
+        }
+
+        Vec::new()
+    }
+
+    fn vars(&self) -> Vec<Var> {
+        vec![self.x]
+    }
 }

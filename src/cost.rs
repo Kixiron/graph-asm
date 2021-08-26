@@ -107,7 +107,8 @@ impl CostFunction<Operator> for OperatorCost<'_> {
 
             // We use a basic ast depth based method to estimate the cost
             // of imperative functions running within operators
-            Operator::OpaqueFunc(_)
+            Operator::Other(_, _)
+            | Operator::OpaqueFunc(_)
             | Operator::Apply(_)
             | Operator::AndThen(_)
             | Operator::FilterOption(_)
@@ -115,7 +116,6 @@ impl CostFunction<Operator> for OperatorCost<'_> {
             | Operator::If(_)
             | Operator::And(_)
             | Operator::Or(_)
-            | Operator::Case(_)
             | Operator::Add(_)
             | Operator::Sub(_)
             | Operator::Mul(_)

@@ -9,3 +9,6 @@ im = "15.0.0"
 egg = "0.6.0"
 velcro = "0.5.3"
 env_logger = "0.8.4"
+
+[dev-dependencies]
+indoc = "1.0.3"

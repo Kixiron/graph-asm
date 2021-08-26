@@ -7,38 +7,30 @@ mod filters_and_maps;
 mod inline_functions;
 mod joins;
 mod logical_exprs;
+mod loops;
 mod reductions;
 mod tests;
 mod utils;
 
 use crate::Rewrite;
-use algebraic_laws::algebraic_laws;
-use arrangements::arrangements;
-use bitwise::bitwise;
-use comparisons::comparisons;
-use concatenation::concatenation;
-use egg::rewrite;
-use filters_and_maps::filters_and_maps;
-use inline_functions::inline_functions;
-use joins::joins;
-use logical_exprs::logical_expressions;
-use reductions::reductions;
+use egg::{rewrite, ConditionEqual};
 use velcro::vec;
 
 #[rustfmt::skip]
 pub fn rules() -> Vec<Rewrite> {
     vec![
-        ..joins(),
-        ..algebraic_laws(),
-        ..logical_expressions(),
+        ..joins::joins(),
+        ..algebraic_laws::algebraic_laws(),
+        ..logical_exprs::logical_expressions(),
         ..empty_collections(),
-        ..comparisons(),
-        inline_functions(),
-        ..filters_and_maps(),
-        ..reductions(),
-        ..concatenation(),
-        ..arrangements(),
-        ..bitwise(),
+        ..comparisons::comparisons(),
+        inline_functions::inline_functions(),
+        ..filters_and_maps::filters_and_maps(),
+        ..reductions::reductions(),
+        ..concatenation::concatenation(),
+        ..arrangements::arrangements(),
+        ..bitwise::bitwise(),
+        ..loops::loops(),
 
         // Mapping by identity is a noop
         rewrite!(
@@ -90,6 +82,19 @@ pub fn rules() -> Vec<Rewrite> {
         rewrite!(
             "simplify-false-if";
             "(if false ?then ?else)" => "?else"
+        ),
+
+        // If both clauses of an if statement are identical then
+        // the if can be removed entirely in favor of the body
+        rewrite!(
+            "simplify-duplicate-if";
+            "(if ?cond ?then ?else)" => "?then"
+                if ConditionEqual::parse("?then", "?else")
+        ),
+
+        ..rewrite!(
+            "commutative-if";
+            "(if ?cond ?then ?else)" <=> "(if (not ?cond) ?else ?then)"
         ),
 
         // Filtering against a constant `true` or filter-mapping
@@ -148,6 +153,12 @@ pub fn rules() -> Vec<Rewrite> {
             "(filter_map ?stream 
                 (fun (if ?condition (some #0) none)))"
             => "(filter ?stream ?condition)"
+        ),
+
+        // Typed nodes can be unwrapped to their inner values
+        rewrite!(
+            "unwrap-typed-nodes";
+            "(typed ?type ?value)" => "?value"
         ),
     ]
 }
